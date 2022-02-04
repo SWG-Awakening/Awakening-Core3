@@ -16,6 +16,9 @@
 #include "server/zone/objects/scene/TransferErrorCode.h"
 #include "QueueCommand.h"
 
+#include "server/zone/managers/log/AwakeningLogManager.h"
+#include "server/zone/managers/log/LogType.h"
+
 class TransferItemMiscCommand : public QueueCommand {
 public:
 	TransferItemMiscCommand(const String& name, ZoneProcessServer* server)
@@ -341,6 +344,15 @@ public:
 		}
 
 		if (notifyLooted) {
+			ManagedReference<AwakeningLogManager*> logMan = zoneServer->getAwakeningLogManager();
+			ManagedReference<SceneObject*> rootParent = objectToTransfer->getRootParent();
+
+			if (logMan != nullptr) {
+				StringBuffer logEntry;
+				logEntry << creature->getFirstName() << " looted " << objectToTransfer->getDisplayedName() << " from " << rootParent->getDisplayedName();
+				logMan->logAction(LogType::LOOT, logEntry.toString());
+			}
+
 			objectToTransfer->notifyObservers(ObserverEventType::ITEMLOOTED, creature, 0);
 		}
 

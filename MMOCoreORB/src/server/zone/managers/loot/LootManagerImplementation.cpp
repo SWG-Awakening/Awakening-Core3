@@ -16,6 +16,8 @@
 #include "LootGroupMap.h"
 #include "server/zone/objects/tangible/component/lightsaber/LightsaberCrystalComponent.h"
 
+#include "server/zone/objects/group/GroupObject.h"
+
 void LootManagerImplementation::initialize() {
 	info("Loading configuration.");
 
@@ -58,11 +60,17 @@ bool LootManagerImplementation::loadConfigData() {
 	Lua* lua = new Lua();
 	lua->init();
 
-	if (!lua->runFile("scripts/managers/loot_manager.lua")) {
+	bool res = lua->runFile("custom_scripts/managers/loot_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/loot_manager.lua");
+
+	if (!res) {
 		delete lua;
 		return false;
 	}
 
+	minLevelForDotWeapon = lua->getGlobalFloat("minLevelForDotWeapon");
 	yellowChance = lua->getGlobalFloat("yellowChance");
 	yellowModifier = lua->getGlobalFloat("yellowModifier");
 	exceptionalChance = lua->getGlobalFloat("exceptionalChance");
@@ -258,6 +266,13 @@ int LootManagerImplementation::calculateLootCredits(int level) {
 
 TangibleObject* LootManagerImplementation::createLootObject(const LootItemTemplate* templateObject, int level, bool maxCondition) {
 	int uncappedLevel = level;
+
+	if (uncappedLevel > 300) {
+
+		float effectivePercentage = ((100.0f - (float)System::random(20)) / 100);
+		uncappedLevel = (int) round(((float) uncappedLevel) * effectivePercentage);
+
+	}
 
 	if(level < 1)
 		level = 1;
@@ -486,8 +501,36 @@ TangibleObject* LootManagerImplementation::createLootObject(const LootItemTempla
 	if (!maxCondition)
 		addConditionDamage(prototype, craftingValues);
 
-	delete craftingValues;
+	if (prototype->isAttachment()){
+		Attachment* attachment = cast<Attachment*>( prototype.get());
 
+		HashTable<String, int>* mods = attachment->getSkillMods();
+		HashTableIterator<String, int> iterator = mods->iterator();
+		StringId name;
+		String customName = "";
+		String key = "";
+		int value = 0;
+		int last = 0;
+		String attachmentType = "(Armor): ";
+
+		if (attachment->isClothingAttachment())
+			attachmentType = "(Clothing): ";
+
+		for (int i = 0; i < mods->size(); ++i) {
+			iterator.getNextKeyAndValue(key, value);
+
+			if (value > last) {
+				last = value;
+				name.setStringId("stat_n", key);
+				prototype->setObjectName(name, false);
+				customName = attachmentType + prototype->getDisplayedName();
+			}
+		}
+
+		prototype->setCustomObjectName(customName, false);
+	}
+
+	delete craftingValues;
 	return prototype;
 }
 
@@ -766,6 +809,9 @@ bool LootManagerImplementation::createLootSet(TransactionLog& trx, SceneObject* 
 }
 
 void LootManagerImplementation::addStaticDots(TangibleObject* object, const LootItemTemplate* templateObject, int level) {
+	if (level < minLevelForDotWeapon)
+		return;
+
 	if (object == nullptr)
 		return;
 
@@ -841,6 +887,9 @@ void LootManagerImplementation::addStaticDots(TangibleObject* object, const Loot
 }
 
 void LootManagerImplementation::addRandomDots(TangibleObject* object, const LootItemTemplate* templateObject, int level, float excMod) {
+	if (level < minLevelForDotWeapon)
+			return;
+
 	if (object == nullptr)
 		return;
 

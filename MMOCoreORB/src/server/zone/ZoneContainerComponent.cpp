@@ -191,7 +191,7 @@ bool ZoneContainerComponent::transferObject(SceneObject* sceneObject, SceneObjec
 				CreatureObject* creature = cast<CreatureObject*>(object);
 
 				if (creature != nullptr)
-					build->onExit(creature, parentID);
+					build->onExit(creature, parentID, true);
 			}
 		}
 	} else {

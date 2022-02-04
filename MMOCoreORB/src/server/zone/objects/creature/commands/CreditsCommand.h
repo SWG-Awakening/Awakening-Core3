@@ -33,7 +33,7 @@ public:
 
 			StringTokenizer args(arguments.toString());
 
-			if(object == nullptr || !object->isPlayerCreature()) {
+			if (object == nullptr || !object->isPlayerCreature()) {
 
 				String firstName;
 				if(args.hasMoreTokens()) {
@@ -104,7 +104,7 @@ public:
 				}
 			}
 
-			if(success)
+			if (success)
 				creature->sendSystemMessage("Credits have been deposited successfully for " + player->getFirstName());
 			else
 				creature->sendSystemMessage("invalid arguments for credits command:  /credits <firstname> <add/subtract> <amount> <bank/cash>");

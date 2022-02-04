@@ -65,6 +65,15 @@ int PlayerContainerComponent::canAddObject(SceneObject* sceneObject, SceneObject
 		}
 
 		if (object->isWearableObject()) {
+			//UnequipBrokenWearables
+			int max = wearable->getMaxCondition();
+			int min = max - wearable->getConditionDamage();
+
+			if (ConfigManager::instance()->getUnequipBrokenWearablesEnabled() && (min == 0 || max == 1)) {
+				errorDescription = "This item cannot be equipped due to poor condition.";
+				return TransferErrorCode::PLAYERUSEMASKERROR;
+			}
+
 			if (tanoData != nullptr) {
 				const Vector<String>& skillsRequired = tanoData->getCertificationsRequired();
 
@@ -160,6 +169,7 @@ int PlayerContainerComponent::notifyObjectInserted(SceneObject* sceneObject, Sce
 
 		if (object->isRobeObject()) {
 			ghost->recalculateForcePower();
+			VisibilityManager::instance()->increaseVisibility(creo, VisibilityManager::ROBEVISMOD);
 		} else if (object->isWeaponObject()) {
 			WeaponObject* weaponObject = cast<WeaponObject*>(object);
 			if (weaponObject->isJediWeapon()) {

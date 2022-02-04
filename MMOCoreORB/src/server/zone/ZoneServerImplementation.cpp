@@ -31,6 +31,7 @@
 #include "server/zone/managers/city/CityManager.h"
 #include "server/zone/managers/structure/StructureManager.h"
 #include "server/zone/managers/frs/FrsManager.h"
+#include "server/zone/managers/log/AwakeningLogManager.h"
 
 #include "server/chat/ChatManager.h"
 
@@ -129,6 +130,7 @@ void ZoneServerImplementation::initialize() {
 
 	objectManager = ObjectManager::instance();
 	objectManager->setZoneProcessor(processor);
+	//objectManager->rebuildSceneObjectsDb(); //Uncomment to rebuild sceneobjects.db.
 	objectManager->updateObjectVersion();
 
 	stringIdManager = StringIdManager::instance();
@@ -268,6 +270,10 @@ void ZoneServerImplementation::startManagers() {
 
 	frsManager = new FrsManager(_this.getReferenceUnsafeStaticCast());
 	frsManager->initialize();
+
+	//Awakening Log Manager
+	awakeningLogManager = new AwakeningLogManager();
+	awakeningLogManager->initialize();
 }
 
 void ZoneServerImplementation::start(int p, int mconn) {
@@ -296,7 +302,7 @@ void ZoneServerImplementation::timedShutdown(int minutes) {
 	} else {
 		task->schedule(60 * 1000);
 
-		String str = "Server will shutdown in " + String::valueOf(minutes) + " minutes";
+		String str = "The server will shutdown in " + String::valueOf(minutes) + " minutes.";
 		Logger::console.info(str, true);
 
 		getChatManager()->broadcastGalaxy(nullptr, str);
@@ -776,7 +782,12 @@ void ZoneServerImplementation::loadLoginMessage() {
 	FileReader* reader;
 
 	try {
-		file = new File("conf/motd.txt");
+		file = new File("custom_scripts/conf/motd.txt");
+		FileInputStream fileStream(file);
+
+		if (!file->exists())
+			file = new File("conf/motd.txt");
+
 		reader = new FileReader(file);
 
 		String line;
@@ -789,9 +800,6 @@ void ZoneServerImplementation::loadLoginMessage() {
 		file = nullptr;
 		reader = nullptr;
 	}
-
-	loginMessage += "\nLatest Commits:\n";
-	loginMessage += ConfigManager::instance()->getRevision();
 
 	delete reader;
 	delete file;
@@ -806,7 +814,12 @@ void ZoneServerImplementation::changeLoginMessage(const String& motd) {
 	String finalMOTD = "";
 
 	try {
-		file = new File("conf/motd.txt");
+		file = new File("custom_scripts/conf/motd.txt");
+		FileInputStream fileStream(file);
+
+		if (!file->exists())
+			file = new File("conf/motd.txt");
+
 		writer = new FileWriter(file);
 
 		for(int i = 0; i < motd.length(); i++) {

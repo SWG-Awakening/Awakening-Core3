@@ -65,6 +65,7 @@
 #include "server/zone/managers/planet/PlanetManager.h"
 #include "terrain/manager/TerrainManager.h"
 
+#include "templates/faction/Factions.h"
 #include "templates/creature/SharedCreatureObjectTemplate.h"
 
 #include "variables/Skill.h"
@@ -2155,6 +2156,7 @@ void CreatureObjectImplementation::subtractCashCredits(int credits) {
 	creditObject->subtractCashCredits(credits, true);
 }
 
+
 bool CreatureObjectImplementation::subtractCredits(int credits) {
 	Locker locker(creditObject);
 	return creditObject->subtractCredits(credits, true);
@@ -2420,8 +2422,10 @@ bool CreatureObjectImplementation::canFeignDeath() {
 	if (defenderCount > maxDefenders)
 		defenderCount = maxDefenders;
 
+	int modIncrease = 10;
+
 	for (int i = 0; i < defenderCount; i++) {
-		if (System::random(100) > skillMod)
+		if (System::random(100) > skillMod + modIncrease)
 			return false;
 	}
 
@@ -3137,17 +3141,25 @@ bool CreatureObjectImplementation::isAggressiveTo(CreatureObject* object) {
 	if (ghost->isOnLoadScreen())
 		return false;
 
-	if (hasPersonalEnemyFlag(object) && object->hasPersonalEnemyFlag(asCreatureObject()))
-		return true;
+	if (ghost->hasSpawnProtection() || targetGhost->hasSpawnProtection())
+		return false;
 
-	if (ConfigManager::instance()->getPvpMode() && isPlayerCreature())
+	if (hasPersonalEnemyFlag(object) && object->hasPersonalEnemyFlag(asCreatureObject()))
 		return true;
 
 	if (CombatManager::instance()->areInDuel(object, asCreatureObject()))
 		return true;
 
-	if ((pvpStatusBitmask & CreatureFlag::OVERT) && (object->getPvpStatusBitmask() & CreatureFlag::OVERT) && object->getFaction() != getFaction())
-		return true;
+	if (getGroupID() != 0 && getGroupID() == object->getGroupID())
+		return false;
+
+	if (ConfigManager::instance()->getTefEnabled()) {
+		if (ghost->isPvpFlagged() && object->getFaction() != 0 && object->getFaction() != getFaction())
+			return true;
+	} else {
+		if ((pvpStatusBitmask & CreatureFlag::OVERT) && (object->getPvpStatusBitmask() & CreatureFlag::OVERT) && object->getFaction() != getFaction())
+			return true;
+	}
 
 	if (ghost->hasBhTef() && (hasBountyMissionFor(object) || object->hasBountyMissionFor(asCreatureObject()))) {
 		return true;
@@ -3172,7 +3184,7 @@ bool CreatureObjectImplementation::isAttackableBy(TangibleObject* object) {
 bool CreatureObjectImplementation::isAttackableBy(TangibleObject* object, bool bypassDeadCheck) {
 	PlayerObject* ghost = getPlayerObject();
 
-	if(ghost == nullptr)
+	if (ghost == nullptr)
 		return false;
 
 	if (ghost->isOnLoadScreen())
@@ -3188,10 +3200,10 @@ bool CreatureObjectImplementation::isAttackableBy(TangibleObject* object, bool b
 	if (getPvpStatusBitmask() == CreatureFlag::NONE)
 		return false;
 
-	if(object->getFaction() == 0 )
+	if (object->getFaction() == 0 )
 		return true;
 
-	if(object->getFaction() == getFaction())
+	if (object->getFaction() == getFaction())
 		return false;
 
 	// if player is on leave, then faction object cannot attack it
@@ -3199,7 +3211,7 @@ bool CreatureObjectImplementation::isAttackableBy(TangibleObject* object, bool b
 		return false;
 
 	// if tano is overt, creature must be overt
-	if((object->getPvpStatusBitmask() & CreatureFlag::OVERT) && !(getPvpStatusBitmask() & CreatureFlag::OVERT))
+	if ((object->getPvpStatusBitmask() & CreatureFlag::OVERT) && !(getPvpStatusBitmask() & CreatureFlag::OVERT))
 		return false;
 
 	// the other options are overt creature / overt tano  and covert/covert, covert tano, overt creature..  all are attackable
@@ -3223,11 +3235,12 @@ bool CreatureObjectImplementation::isAttackableBy(CreatureObject* object, bool b
 
 	if (isPlayerCreature()) {
 		PlayerObject* ghost = getPlayerObject();
+
 		if (ghost != nullptr) {
 			if (ghost->isOnLoadScreen())
 				return false;
-			if (ConfigManager::instance()->getPvpMode())
-				return true;
+			if (ghost->hasSpawnProtection())
+				return false;
 
 			if (object->isAiAgent() && ghost->hasCrackdownTefTowards(object->getFaction())) {
 				return true;
@@ -3264,11 +3277,18 @@ bool CreatureObjectImplementation::isAttackableBy(CreatureObject* object, bool b
 		if(!object->isRebel() && !object->isImperial())
 			return true;
 
-		if(getFaction() == 0 || getFaction() == object->getFaction())
+		if (getFaction() == 0 || getFaction() == object->getFaction()) {
 			return false;
-		else if (isPlayerCreature() && getFactionStatus() == FactionStatus::ONLEAVE)
-			return false;
-
+		} else if (isPlayerCreature()) {
+			if (ConfigManager::instance()->getTefEnabled()) {
+				PlayerObject* ghost = getPlayerObject();
+				if (ghost != nullptr && !ghost->isPvpFlagged())
+					return false;
+			} else {
+				if (getFactionStatus() == FactionStatus::ONLEAVE)
+					return false;
+			}
+		}
 		return true;
 	}
 
@@ -3276,6 +3296,9 @@ bool CreatureObjectImplementation::isAttackableBy(CreatureObject* object, bool b
 	PlayerObject* targetGhost = object->getPlayerObject();
 
 	if (ghost == nullptr || targetGhost == nullptr)
+		return false;
+
+	if (targetGhost->hasSpawnProtection())
 		return false;
 
 	if (hasPersonalEnemyFlag(object) && object->hasPersonalEnemyFlag(asCreatureObject()))
@@ -3286,14 +3309,19 @@ bool CreatureObjectImplementation::isAttackableBy(CreatureObject* object, bool b
 	if (areInDuel)
 		return true;
 
-	if (object->hasBountyMissionFor(asCreatureObject()) || (ghost->hasBhTef() && hasBountyMissionFor(object)))
-		return true;
-
 	if (getGroupID() != 0 && getGroupID() == object->getGroupID())
 		return false;
 
-	if ((pvpStatusBitmask & CreatureFlag::OVERT) && (object->getPvpStatusBitmask() & CreatureFlag::OVERT) && object->getFaction() != getFaction())
+	if (object->hasBountyMissionFor(asCreatureObject()) || (ghost->hasBhTef() && hasBountyMissionFor(object)))
 		return true;
+
+	if (ConfigManager::instance()->getTefEnabled()) {
+		if (ghost->isPvpFlagged() && object->getFaction() != 0 && object->getFaction() != getFaction())
+			return true;
+	} else {
+		if ((pvpStatusBitmask & CreatureFlag::OVERT) && (object->getPvpStatusBitmask() & CreatureFlag::OVERT) && object->getFaction() != getFaction())
+			return true;
+	}
 
 	ManagedReference<GuildObject*> guildObject = guild.get();
 	if (guildObject != nullptr && guildObject->isInWaringGuild(object))
@@ -3317,11 +3345,6 @@ bool CreatureObjectImplementation::isHealableBy(CreatureObject* object) {
 	if (ghost == nullptr)
 		return false;
 
-	if (ghost->hasBhTef())
-		return false;
-
-	//if ((pvpStatusBitmask & CreatureFlag::OVERT) && (object->getPvpStatusBitmask() & CreatureFlag::OVERT) && object->getFaction() != getFaction())
-
 	CreatureObject* targetCreo = asCreatureObject();
 
 	if (isPet()) {
@@ -3335,20 +3358,25 @@ bool CreatureObjectImplementation::isHealableBy(CreatureObject* object) {
 	uint32 targetFactionStatus = targetCreo->getFactionStatus();
 	uint32 currentFactionStatus = object->getFactionStatus();
 
-	if (getFaction() != object->getFaction() && !(targetFactionStatus == FactionStatus::ONLEAVE))
+	PlayerObject* targetGhost = targetCreo->getPlayerObject();
+	if (targetGhost == nullptr)
 		return false;
 
-	if ((targetFactionStatus == FactionStatus::OVERT) && !(currentFactionStatus == FactionStatus::OVERT))
-		return false;
+	if (ConfigManager::instance()->getTefEnabled()) {
+		if (targetGhost->isPvpFlagged() && (object->getFaction() == 0 || getFaction() != object->getFaction()))
+			return false;
 
-	if (!(targetFactionStatus == FactionStatus::ONLEAVE) && (currentFactionStatus == FactionStatus::ONLEAVE))
-		return false;
-
-	if(targetCreo->isPlayerCreature()) {
-		PlayerObject* targetGhost = targetCreo->getPlayerObject();
-		if(targetGhost != nullptr && targetGhost->hasBhTef())
+	} else {
+		if (getFaction() != object->getFaction() && !(targetFactionStatus == FactionStatus::ONLEAVE))
+			return false;
+		if ((targetFactionStatus == FactionStatus::OVERT) && !(currentFactionStatus == FactionStatus::OVERT))
+			return false;
+		if (!(targetFactionStatus == FactionStatus::ONLEAVE) && (currentFactionStatus == FactionStatus::ONLEAVE))
 			return false;
 	}
+
+	if (ghost->hasBhTef() || targetGhost->hasBhTef())
+		return false;
 
 	return true;
 }
@@ -3568,9 +3596,41 @@ void CreatureObjectImplementation::setFaction(unsigned int crc) {
 
 		StoreSpawnedChildrenTask* task = new StoreSpawnedChildrenTask(player, std::move(petsToStore));
 		task->execute();
-	}
 
-	notifyObservers(ObserverEventType::FACTIONCHANGED);
+		notifyObservers(ObserverEventType::FACTIONCHANGED);
+
+		ChatManager* chatManager = server->getChatManager();
+
+		ManagedReference<ChatRoom*> imperialChat = chatManager->getImperialRoom();
+		ManagedReference<ChatRoom*> rebelChat = chatManager->getRebelRoom();
+
+		if (imperialChat == nullptr || rebelChat == nullptr)
+			return;
+
+		if (imperialChat->hasPlayer(player)) {
+			Locker clocker(imperialChat, player);
+			imperialChat->removePlayer(player);
+			imperialChat->sendDestroyTo(player);
+		}
+
+		if (rebelChat->hasPlayer(player)) {
+			Locker clocker(rebelChat, player);
+			rebelChat->removePlayer(player);
+			rebelChat->sendDestroyTo(player);
+		}
+
+		if (crc == Factions::FACTIONREBEL) {
+			rebelChat->sendTo(player);
+			chatManager->handleChatEnterRoomById(player, rebelChat->getRoomID(), -1, true);
+			ghost->updateCharacterStats("faction", 1);
+		} else if (crc == Factions::FACTIONIMPERIAL) {
+			imperialChat->sendTo(player);
+			chatManager->handleChatEnterRoomById(player, imperialChat->getRoomID(), -1, true);
+			ghost->updateCharacterStats("faction", 2);
+		} else {
+			ghost->updateCharacterStats("faction", 0);
+		}
+	}
 }
 
 void CreatureObjectImplementation::destroyPlayerCreatureFromDatabase(bool destroyContainedObjects) {

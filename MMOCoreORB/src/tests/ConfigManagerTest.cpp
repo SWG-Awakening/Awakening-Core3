@@ -36,12 +36,6 @@ public:
 	}
 };
 
-TEST_F(ConfigManagerTest, StringTest) {
-	auto tmp1 = configManager->getString("Core3.InactiveAccountText", "Account Disabled");
-	auto tmp2 = configManager->getInactiveAccountText();
-	ASSERT_EQ(tmp1, tmp2);
-}
-
 TEST_F(ConfigManagerTest, BoolTest) {
 	auto tmp1 = configManager->getMakeZone();
 	ASSERT_TRUE(tmp1);

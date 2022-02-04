@@ -39,6 +39,7 @@
 #include "server/zone/objects/intangible/TheaterObject.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 
+
 Mutex CreatureManagerImplementation::loadMutex;
 
 void CreatureManagerImplementation::setCreatureTemplateManager() {
@@ -552,15 +553,24 @@ int CreatureManagerImplementation::notifyDestruction(TangibleObject* destructor,
 							for (int i = 0; i < group->getGroupSize(); i++) {
 								ManagedReference<CreatureObject*> groupMember = group->getGroupMember(i);
 
-								if (groupMember->isPlayerCreature()) {
+								if (groupMember->isPlayerCreature() &&
+										groupMember->getWorldPosition().distanceTo(destructedObject->getWorldPosition()) < ZoneServer::CLOSEOBJECTRANGE) {
 									Locker locker(groupMember, destructedObject);
 									groupMember->notifyObservers(ObserverEventType::KILLEDCREATURE, destructedObject);
+
+									PlayerObject* groupGhost = groupMember->getPlayerObject();
+									if (groupGhost != nullptr)
+										groupGhost->updatePveKills();
 								}
 							}
 						}
 					} else {
 						Locker locker(player, destructedObject);
 						player->notifyObservers(ObserverEventType::KILLEDCREATURE, destructedObject);
+
+						PlayerObject* ghost = player->getPlayerObject();
+						if (ghost != nullptr)
+							ghost->updatePveKills();
 					}
 				}
 
@@ -575,7 +585,6 @@ int CreatureManagerImplementation::notifyDestruction(TangibleObject* destructor,
 						factionManager->awardFactionStanding(copyThreatMap.getHighestDamagePlayer(), destructedObject->getFactionString(), level);
 				}
 			}
-
 		}
 
 		if (playerManager != nullptr)
@@ -746,8 +755,10 @@ void CreatureManagerImplementation::droidHarvest(Creature* creature, CreatureObj
 		quantityExtracted = (int)(quantityExtracted * modifier);
 	}
 
+	/* Allow cave harvesting
 	if (creature->getParent().get() != nullptr)
 		quantityExtracted = 1;
+	*/
 
 	int droidBonus = DroidMechanics::determineDroidSkillBonus(ownerSkill,harvestBonus,quantityExtracted);
 
@@ -917,8 +928,10 @@ void CreatureManagerImplementation::harvest(Creature* creature, CreatureObject* 
 		quantityExtracted = (int)(quantityExtracted * modifier);
 	}
 
-	if (creature->getParent().get() != nullptr)
+	/* Allow cave harvesting
+	if (creature->getParent().get() != NULL)
 		quantityExtracted = 1;
+	*/
 
 	TransactionLog trx(TrxCode::HARVESTED, player, resourceSpawn);
 	resourceManager->harvestResourceToPlayer(trx, player, resourceSpawn, quantityExtracted);

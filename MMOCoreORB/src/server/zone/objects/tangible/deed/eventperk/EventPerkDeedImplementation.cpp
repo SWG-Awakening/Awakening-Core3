@@ -52,6 +52,8 @@ int EventPerkDeedImplementation::handleObjectMenuSelect(CreatureObject* player, 
 		return 1;
 	}
 
+	bool playerIsAdmin = player->hasSkill("admin_server_admin_01");
+
 	if (selectedID == 20) {
 		if (generated) {
 			return 1;
@@ -79,8 +81,10 @@ int EventPerkDeedImplementation::handleObjectMenuSelect(CreatureObject* player, 
 		}
 
 		if (!deedTemplate->isAllowedZone(zone->getZoneName())) {
-			player->sendSystemMessage("@event_perk:not_on_this_planet"); // You cannot deploy this rental on this planet. Examine the deed to determine the intended planet for this rental.
-			return 1;
+			if (!playerIsAdmin){
+				player->sendSystemMessage("@event_perk:not_on_this_planet"); // You cannot deploy this rental on this planet. Examine the deed to determine the intended planet for this rental.
+				return 1;
+			}
 		}
 
 		if (!isASubChildOf(player)) {
@@ -109,13 +113,17 @@ int EventPerkDeedImplementation::handleObjectMenuSelect(CreatureObject* player, 
 
 		if (city != nullptr) {
 			if (city->isClientRegion()) {
-				player->sendSystemMessage("@event_perk:not_in_municipal_zone"); // You may not place a Rental in a municipal zone.
-				return 1;
+				if(!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:not_in_municipal_zone"); // You may not place a Rental in a municipal zone.
+					return 1;
+				}
 			}
 
 			if (city->isZoningEnabled() && !city->hasZoningRights(player->getObjectID())) {
-				player->sendSystemMessage("@event_perk:no_zoning_rights"); // You must have zoning rights to place a Rental in this city.
-				return 1;
+				if (!playerIsAdmin) {
+					player->sendSystemMessage("@event_perk:no_zoning_rights"); // You must have zoning rights to place a Rental in this city.
+					return 1;
+				}
 			}
 		}
 
@@ -156,30 +164,40 @@ int EventPerkDeedImplementation::handleObjectMenuSelect(CreatureObject* player, 
 			float radius = objectTemplate->getNoBuildRadius();
 
 			if (obj->isLairObject() && player->isInRange(obj, radius)) {
-				player->sendSystemMessage("@event_perk:too_close_lair"); // You cannot place a Rental this close to a lair.
-				return 1;
-			}
-
-			if (obj->isCampStructure() && player->isInRange(obj, radius)) {
-				player->sendSystemMessage("@event_perk:too_close_camp"); // You cannot place a Rental this close to a camp.
-				return 1;
-			}
-
-			if (radius > 0 && player->isInRange(obj, radius)) {
-				player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
-				return 1;
-			}
-
-			if (objectTemplate->isSharedStructureObjectTemplate()) {
-				if (StructureManager::instance()->isInStructureFootprint(cast<StructureObject*>(obj), x, y, 0)) {
-					player->sendSystemMessage("@event_perk:too_close_building"); // You may not place a Rental this close to a building.
+				if (!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:too_close_lair"); // You cannot place a Rental this close to a lair.
 					return 1;
 				}
 			}
 
+			if (obj->isCampStructure() && player->isInRange(obj, radius)) {
+				if (!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:too_close_camp"); // You cannot place a Rental this close to a camp.
+					return 1;
+				}
+			}
+
+			if (radius > 0 && player->isInRange(obj, radius)) {
+				if (!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
+					return 1;
+				}
+			}
+
+			if (objectTemplate->isSharedStructureObjectTemplate()) {
+				if (StructureManager::instance()->isInStructureFootprint(cast<StructureObject*>(obj), x, y, 0)) {
+					if (!playerIsAdmin){
+						player->sendSystemMessage("@event_perk:too_close_building"); // You may not place a Rental this close to a building.
+						return 1;
+					}
+				}
+			}
+
 			if (obj->isEventPerk() && player->isInRange(obj, 32) && ++nearbyPerks > 2) {
-				player->sendSystemMessage("@event_perk:too_many_perks"); // There are too many Rentals already deployed in this area. Please move to another location.
-				return 1;
+				if (!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:too_many_perks"); // There are too many Rentals already deployed in this area. Please move to another location.
+					return 1;
+				}
 			}
 		}
 
@@ -190,14 +208,18 @@ int EventPerkDeedImplementation::handleObjectMenuSelect(CreatureObject* player, 
 			ActiveArea* area = activeAreas.get(i);
 
 			if (area->isNoBuildArea()) {
-				player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
-				return 1;
+				if (!playerIsAdmin){
+					player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
+					return 1;
+				}
 			}
 		}
 
 		if (planetManager->isInRangeWithPoi(x, y, 150)) {
-			player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
-			return 1;
+			if (!playerIsAdmin){
+				player->sendSystemMessage("@event_perk:too_close_something"); // You are too close to an object to deploy your Rental here. Move away from it.
+				return 1;
+			}
 		}
 
 		ManagedReference<TangibleObject*> object = generatedObject.get();

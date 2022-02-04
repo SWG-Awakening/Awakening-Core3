@@ -548,6 +548,9 @@ void PerformanceManager::performanceMessageToPlayer(CreatureObject* player, Crea
 	StringIdChatParameter message;
 	message.setStringId(table, text);
 
+	if (player->getDistanceTo(actor) > 15)
+		return;
+
 	if (actor != nullptr)
 		message.setTU(actor->getCustomObjectName());
 

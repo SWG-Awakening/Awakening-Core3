@@ -28,7 +28,6 @@ build_temp
 *_includes
 html
 latex
-log
 src/Makefile
 src/server/chat/Makefile
 src/server/conf/Makefile

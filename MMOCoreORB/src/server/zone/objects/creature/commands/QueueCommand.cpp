@@ -14,6 +14,7 @@
 #include "server/zone/managers/combat/CombatManager.h"
 #include "server/zone/managers/frs/FrsManager.h"
 
+
 QueueCommand::QueueCommand(const String& skillname, ZoneProcessServer* serv) : Logger() {
 	server = serv;
 
@@ -291,31 +292,43 @@ bool QueueCommand::checkForArenaDuel(CreatureObject* target) const {
 }
 
 void QueueCommand::checkForTef(CreatureObject* creature, CreatureObject* target) const {
-	if (!creature->isPlayerCreature() || creature == target) {
+	if (!creature->isPlayerCreature() || creature == target)
 		return;
-	}
 
 	PlayerObject* ghost = creature->getPlayerObject().get();
-
-	if (ghost == nullptr) {
+	if (ghost == nullptr)
 		return;
-	}
 
 	if (target->isPlayerCreature()) {
 		PlayerObject* targetGhost = target->getPlayerObject().get();
-
-		if (targetGhost != nullptr && !CombatManager::instance()->areInDuel(creature, target) && target->getFactionStatus() == FactionStatus::OVERT && targetGhost->hasPvpTef()) {
-			ghost->updateLastGcwPvpCombatActionTimestamp();
+		if (ConfigManager::instance()->getTefEnabled()) {
+			if (!CombatManager::instance()->areInDuel(creature, target) && targetGhost != nullptr) {
+				if (targetGhost->isPvpFlagged()) {
+					ghost->updateLastGcwPvpCombatActionTimestamp();
+				}
+			}
+		} else {
+			if (!CombatManager::instance()->areInDuel(creature, target) && targetGhost != nullptr && target->getFactionStatus() == FactionStatus::OVERT && (targetGhost->hasGcwTef() || targetGhost->hasBhTef())) {
+				ghost->updateLastGcwPvpCombatActionTimestamp();
+			}
 		}
-
 	} else if (target->isPet()) {
 		ManagedReference<CreatureObject*> owner = target->getLinkedCreature().get();
 
 		if (owner != nullptr && owner->isPlayerCreature()) {
 			PlayerObject* ownerGhost = owner->getPlayerObject().get();
 
-			if (ownerGhost != nullptr && !CombatManager::instance()->areInDuel(creature, owner) && owner->getFactionStatus() == FactionStatus::OVERT && ownerGhost->hasPvpTef()) {
-				ghost->updateLastGcwPvpCombatActionTimestamp();
+			if (ConfigManager::instance()->getTefEnabled()) {
+				if (!CombatManager::instance()->areInDuel(creature, owner) && ownerGhost != nullptr) {
+					if (ownerGhost->isPvpFlagged()) {
+						ghost->updateLastGcwPvpCombatActionTimestamp();
+					}
+				}
+			} else {
+				if (!CombatManager::instance()->areInDuel(creature, owner)
+						&& ownerGhost != nullptr && owner->getFactionStatus() == FactionStatus::OVERT && (ownerGhost->hasGcwTef() || ownerGhost->hasBhTef())) {
+					ghost->updateLastGcwPvpCombatActionTimestamp();
+				}
 			}
 		}
 	}

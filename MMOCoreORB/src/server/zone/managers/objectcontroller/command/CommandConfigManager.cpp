@@ -528,7 +528,10 @@ int CommandConfigManager::runSlashCommandsFile(lua_State* L) {
 
 	filename = getStringParameter(L);
 
-	bool res = runFile("scripts/commands/" + filename, L);
+	bool res = runFile("custom_scripts/commands/" + filename, L);
+
+	if (!res)
+		res = runFile("scripts/commands/" + filename, L);
 
 	if (!res)
 		ERROR_CODE = GENERAL_ERROR;
@@ -634,6 +637,10 @@ void CommandConfigManager::parseVariableData(String varName, LuaObject &command,
 			combatCommand->setFrsDarkMinDamageModifier(Lua::getFloatParameter(L));
 		else if (varName == "frsDarkMaxDamageModifier")
 			combatCommand->setFrsDarkMaxDamageModifier(Lua::getFloatParameter(L));
+		else if (varName == "frsLightSpeedModifier")
+			combatCommand->setFrsLightSpeedModifier(Lua::getFloatParameter(L));
+		else if (varName == "frsDarkSpeedModifier")
+			combatCommand->setFrsDarkSpeedModifier(Lua::getFloatParameter(L));
 		else if (varName == "visMod")
 			combatCommand->setVisMod(Lua::getIntParameter(L));
 		else if (varName == "coneRange")
@@ -674,7 +681,6 @@ void CommandConfigManager::parseVariableData(String varName, LuaObject &command,
 				combatCommand->addStateEffect(StateEffect(state));
 				state.pop();
 			}
-
 			states.pop();
 		} else if (varName == "dotEffects") {
 			LuaObject dots(L);
@@ -686,7 +692,6 @@ void CommandConfigManager::parseVariableData(String varName, LuaObject &command,
 				//System::out << "count " << combatCommand->getDotEffects()->size()<< endl;
 				dot.pop();
 			}
-
 			dots.pop();
 		} else if (combatCommand->isSquadLeaderCommand()) {
 			SquadLeaderCommand* slCommand = cast<SquadLeaderCommand*>(combatCommand);

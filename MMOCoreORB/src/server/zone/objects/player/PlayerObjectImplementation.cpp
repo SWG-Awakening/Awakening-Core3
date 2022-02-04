@@ -80,6 +80,10 @@
 #include "server/login/SessionAPIClient.h"
 #endif // WITH_SESSION_API
 
+#include "server/zone/objects/player/events/PlayerBountyTask.h"
+#include "server/zone/objects/player/events/SpawnProtectionRemovalTask.h"
+#include "server/zone/managers/objectcontroller/ObjectController.h"
+
 void PlayerObjectImplementation::initializeTransientMembers() {
 	playerLogLevel = ConfigManager::instance()->getPlayerLogLevel();
 
@@ -329,18 +333,26 @@ void PlayerObjectImplementation::unload() {
 }
 
 int PlayerObjectImplementation::calculateBhReward() {
-	int minReward = 25000; // Minimum reward for a player bounty
+	int minReward = 70000; // Minimum reward for a player bounty
+	int maxReward = 500000; // Maximum reward for a player bounty
+	int reward = 0;
 
-	if (getJediState() >= 4) // Minimum if player is knight
-		minReward = 50000;
+	ManagedReference<CreatureObject*> player = getParent().get().castTo<CreatureObject*>();
 
-	int skillPoints = getSpentJediSkillPoints();
-	int reward = skillPoints * 1000;
+	if (player != nullptr) {
+		if (player->hasSkill("force_title_jedi_rank_02")) {
+			reward = getSpentJediSkillPoints() * 2000;
 
-	int frsRank = getFrsData()->getRank();
+			if (player->hasSkill("force_title_jedi_rank_03"))
+				reward += getFrsData()->getRank() * 100000;
 
-	if (frsRank > 0)
-		reward += frsRank * 100000; // +100k per frs rank
+		} else {
+			reward = getPvpKills() * 1000;
+
+			if (reward > maxReward)
+				reward = maxReward;
+		}
+	}
 
 	if (reward < minReward)
 		reward = minReward;
@@ -403,10 +415,30 @@ void PlayerObjectImplementation::notifySceneReady() {
 	if (zoneServer == nullptr || zoneServer->isServerLoading())
 		return;
 
-	//Join GuildChat
 	ManagedReference<ChatManager*> chatManager = zoneServer->getChatManager();
-	ManagedReference<GuildObject*> guild = creature->getGuildObject().get();
 
+	//Force Player To Join General Chat
+	if (ConfigManager::instance()->getGeneralChatEnabled()) {
+		ManagedReference<ChatRoom*> generalChat = chatManager->getGeneralRoom();
+
+		if (generalChat != nullptr) {
+			generalChat->sendTo(creature);
+			chatManager->handleChatEnterRoomById(creature, generalChat->getRoomID(), -1, true);
+		}
+	}
+
+	//Force Player To Join PvP Chat
+	if (ConfigManager::instance()->getCustomRoomsEnabled()) {
+		ManagedReference<ChatRoom*> pvpChat = chatManager->getPvpRoom();
+
+		if (pvpChat != nullptr) {
+			pvpChat->sendTo(creature);
+			chatManager->handleChatEnterRoomById(creature, pvpChat->getRoomID(), -1);
+		}
+	}
+
+	//Join GuildChat
+	ManagedReference<GuildObject*> guild = creature->getGuildObject().get();
 	if (guild != nullptr) {
 		ManagedReference<ChatRoom*> guildChat = guild->getChatRoom();
 		if (guildChat != nullptr) {
@@ -447,8 +479,18 @@ void PlayerObjectImplementation::notifySceneReady() {
 		ChatRoom* room = chatManager->getChatRoom(chatRooms.get(i));
 		if (room != nullptr) {
 			int roomType = room->getChatRoomType();
-			if (roomType == ChatRoom::PLANET || roomType == ChatRoom::GUILD)
-				continue; //Planet and Guild are handled above.
+			if (roomType == ChatRoom::PLANET
+					|| roomType == ChatRoom::GUILD
+					|| room->getRoomID() == chatManager->getGeneralRoom()->getRoomID()
+					|| room->getRoomID() == chatManager->getPvpRoom()->getRoomID())
+				continue; //Planet and Guild are handled above, along with General and PvP if enabled
+
+			int roomPermission = room->checkEnterPermission(creature);
+
+			if (roomPermission != ChatManager::SUCCESS) {
+				chatRooms.remove(i);
+				continue;
+			}
 
 			room->sendTo(creature);
 			chatManager->handleChatEnterRoomById(creature, room->getRoomID(), -1);
@@ -583,12 +625,15 @@ int PlayerObjectImplementation::addExperience(const String& xpType, int xp, bool
 	if (experienceList.contains(xpType)) {
 		xp += experienceList.get(xpType);
 
+		// Set minimum on jedi xp to be a negative value no greater than 1/2 the player's current maximum
+		int xpMinimum = -abs(xpTypeCapList.get(xpType) / 2); // Cap on negative jedi experience
+
 		if (xp <= 0 && xpType != "jedi_general") {
 			removeExperience(xpType, notifyClient);
 			return 0;
-		// -10 million experience cap for Jedi experience loss
-		} else if(xp < -10000000 && xpType == "jedi_general") {
-			xp = -10000000;
+		// set the xp cap for Jedi experience loss
+		} else if(xp < xpMinimum && xpType == "jedi_general") {
+			xp = xpMinimum;
 		}
 	}
 
@@ -1422,6 +1467,9 @@ void PlayerObjectImplementation::notifyOnline() {
 		}
 	}
 
+	//Awakening Notify Online
+	awakeningNotifyOnline();
+
 	playerCreature->schedulePersonalEnemyFlagTasks();
 }
 
@@ -1469,6 +1517,9 @@ void PlayerObjectImplementation::notifyOffline() {
 	}
 
 	logSessionStats(true);
+
+	//Awakening Notify Offline
+	awakeningNotifyOffline();
 
 #ifdef WITH_SESSION_API
 	auto client = playerCreature->getClient();
@@ -2067,7 +2118,7 @@ void PlayerObjectImplementation::activateForcePowerRegen() {
 
 	float regen = (float)creature->getSkillMod("jedi_force_power_regen");
 
-	if(regen == 0.0f)
+	if (regen == 0.0f)
 		return;
 
 	if (forceRegenerationEvent == nullptr) {
@@ -2081,7 +2132,7 @@ void PlayerObjectImplementation::activateForcePowerRegen() {
 			forceControlMod = creature->getSkillMod("force_control_light");
 			forceManipulationMod = creature->getSkillMod("force_manipulation_light");
 		} else if (creature->hasSkill("force_rank_dark_novice")) {
-			forceControlMod = creature->getSkillMod("force_power_dark");
+			forceControlMod = creature->getSkillMod("force_control_dark");
 			forceManipulationMod = creature->getSkillMod("force_manipulation_dark");
 		}
 
@@ -2369,70 +2420,68 @@ Time PlayerObjectImplementation::getLastGcwCrackdownCombatActionTimestamp() cons
 	return lastCrackdownGcwCombatActionTimestamp;
 }
 
-void PlayerObjectImplementation::updateLastCombatActionTimestamp(bool updateGcwCrackdownAction, bool updateGcwAction, bool updateBhAction) {
+void PlayerObjectImplementation::updateLastPvpCombatActionTimestamp(bool updateGcwCrackdownAction, bool updateGcwAction, bool updateBhAction, int duration) {
 	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
 
 	if (parent == nullptr)
 		return;
 
-	bool alreadyHasTef = hasTef();
+	if (duration == 0)
+		duration = FactionManager::TEFTIMER;
+	else
+		duration = duration * 60000;
 
 	if (updateGcwCrackdownAction) {
 		lastCrackdownGcwCombatActionTimestamp.updateToCurrentTime();
-		lastCrackdownGcwCombatActionTimestamp.addMiliTime(FactionManager::TEFTIMER);
+		lastCrackdownGcwCombatActionTimestamp.addMiliTime(duration);
 	}
 
 	if (updateBhAction) {
-		bool alreadyHasBhTef = hasBhTef();
 		lastBhPvpCombatActionTimestamp.updateToCurrentTime();
-		lastBhPvpCombatActionTimestamp.addMiliTime(FactionManager::TEFTIMER);
+		lastBhPvpCombatActionTimestamp.addMiliTime(duration);
 
-		if (!alreadyHasBhTef)
+		if (!hasBhTef())
 			parent->notifyObservers(ObserverEventType::BHTEFCHANGED);
 	}
 
 	if (updateGcwAction) {
 		lastGcwPvpCombatActionTimestamp.updateToCurrentTime();
-		lastGcwPvpCombatActionTimestamp.addMiliTime(FactionManager::TEFTIMER);
+		lastGcwPvpCombatActionTimestamp.addMiliTime(duration);
 	}
 
 	schedulePvpTefRemovalTask();
 
-	if (!alreadyHasTef) {
+	if (!hasCrackdownTef() || !hasGcwTef() || !hasBhTef()) {
 		updateInRangeBuildingPermissions();
 		parent->setPvpStatusBit(CreatureFlag::TEF);
 	}
 }
 
 void PlayerObjectImplementation::updateLastBhPvpCombatActionTimestamp() {
-	updateLastCombatActionTimestamp(false, false, true);
+	updateLastPvpCombatActionTimestamp(false, false, true);
 }
 
 void PlayerObjectImplementation::updateLastGcwPvpCombatActionTimestamp() {
-	updateLastCombatActionTimestamp(false, true, false);
-}
-
-bool PlayerObjectImplementation::hasTef() const {
-	return hasCrackdownTef() || hasPvpTef();
-}
-
-bool PlayerObjectImplementation::hasPvpTef() const {
-	return !lastGcwPvpCombatActionTimestamp.isPast() || hasBhTef();
-}
-
-bool PlayerObjectImplementation::hasBhTef() const {
-	return !lastBhPvpCombatActionTimestamp.isPast();
+	updateLastPvpCombatActionTimestamp(false, true, false);
 }
 
 void PlayerObjectImplementation::setCrackdownTefTowards(unsigned int factionCrc, bool scheduleTefRemovalTask) {
 	crackdownFactionTefCrc = factionCrc;
 	if (scheduleTefRemovalTask) {
-		updateLastCombatActionTimestamp(true, false, false);
+		updateLastPvpCombatActionTimestamp(true, false, false);
 	}
 }
 
 bool PlayerObjectImplementation::hasCrackdownTefTowards(unsigned int factionCrc) const {
 	return !lastCrackdownGcwCombatActionTimestamp.isPast() && factionCrc != 0 && crackdownFactionTefCrc == factionCrc;
+}
+
+bool PlayerObjectImplementation::hasGcwTef() const {
+	return !lastGcwPvpCombatActionTimestamp.isPast();
+}
+
+bool PlayerObjectImplementation::hasBhTef() const {
+	return !lastBhPvpCombatActionTimestamp.isPast();
 }
 
 bool PlayerObjectImplementation::hasCrackdownTef() const {
@@ -2458,6 +2507,7 @@ void PlayerObjectImplementation::schedulePvpTefRemovalTask(bool removeCrackdownG
 
 		if (removeGcwTefNow) {
 			lastGcwPvpCombatActionTimestamp.updateToCurrentTime();
+			lastGcwPvpCombatActionTimestamp.addMiliTime(5000);
 		}
 
 		if (removeBhTefNow) {
@@ -2471,7 +2521,7 @@ void PlayerObjectImplementation::schedulePvpTefRemovalTask(bool removeCrackdownG
 	}
 
 	if (!pvpTefTask->isScheduled()) {
-		if (hasTef()) {
+		if (hasCrackdownTef() || hasGcwTef() || hasBhTef()) {
 			auto gcwCrackdownTefMs = getLastGcwCrackdownCombatActionTimestamp().miliDifference();
 			auto gcwTefMs = getLastGcwPvpCombatActionTimestamp().miliDifference();
 			auto bhTefMs = getLastBhPvpCombatActionTimestamp().miliDifference();
@@ -2486,6 +2536,18 @@ void PlayerObjectImplementation::schedulePvpTefRemovalTask(bool removeCrackdownG
 
 void PlayerObjectImplementation::schedulePvpTefRemovalTask(bool removeNow) {
 	schedulePvpTefRemovalTask(removeNow, removeNow, removeNow);
+}
+
+bool PlayerObjectImplementation::isPvpFlagged() {
+	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
+
+	if (parent == nullptr)
+		return false;
+
+	if (!(parent->getPvpStatusBitmask() & CreatureFlag::OVERT) && !hasGcwTef() && !hasCityTef())
+		return false;
+
+	return true;
 }
 
 Vector3 PlayerObjectImplementation::getTrainerCoordinates() const {
@@ -2574,6 +2636,15 @@ void PlayerObjectImplementation::destroyObjectFromDatabase(bool destroyContained
 		ManagedReference<StructureObject*> structure = getZoneServer()->getObject(oid).castTo<StructureObject*>();
 
 		if (structure != nullptr) {
+
+			//This shouldn't happen but it did. Lets make sure it doesn't ever again.
+			ManagedReference<CreatureObject*> player = getParent().get().castTo<CreatureObject*>();
+
+			if (player != nullptr && player->getObjectID() != structure->getOwnerObjectID()) {
+				error("Tried deleting a structure that does not belong to the player in PlayerObjectImplementation::destroyObjectFromDatabase. Skipping structure.");
+				continue;
+			}
+
 			Zone* zone = structure->getZone();
 
 			if (zone != nullptr) {
@@ -2595,8 +2666,9 @@ void PlayerObjectImplementation::destroyObjectFromDatabase(bool destroyContained
 
 					continue;
 				}
-
-				StructureManager::instance()->destroyStructure(structure);
+				StructureManager::instance()->destroyStructure(structure, false, "the owners character was deleted.");
+			} else if (structure->isPackedUp()) {
+				StructureManager::instance()->destroyStructure(structure, false, "the owners character was deleted.");
 			} else {
 				structure->destroyObjectFromDatabase(true);
 			}
@@ -2849,15 +2921,18 @@ PlayerQuestData PlayerObjectImplementation::getQuestData(uint32 questHashCode) c
 int PlayerObjectImplementation::getVendorCount() {
 	// Cleanup vendor list before returning the count
 	for (int i = ownedVendors.size() - 1; i >= 0; --i) {
-		ManagedReference<SceneObject*> vendor = server->getZoneServer()->getObject(ownedVendors.get(i)).get();
+		ManagedReference<TangibleObject*> vendor = server->getZoneServer()->getObject(ownedVendors.get(i)).castTo<TangibleObject*>();
 
 		if (vendor == nullptr) {
+			info("Vendor is null in PlayerObjectImplementation::getVendorCount" , true);
 			ownedVendors.remove(i);
 			continue;
 		}
 
-		if (vendor->getParent().get() == nullptr)
+		if (vendor->getParent().get() == nullptr && vendor->getControlDevice() == nullptr) {
+			info("Vendor parent is null in PlayerObjectImplementation::getVendorCount" , true);
 			vendor->destroyObjectFromDatabase(true);
+		}
 	}
 
 	return ownedVendors.size();
@@ -2943,6 +3018,564 @@ void PlayerObjectImplementation::doFieldFactionChange(int newStatus) {
 	parent->sendMessage(inputbox->generateMessage());
 }
 
+void PlayerObjectImplementation::awakeningNotifyOnline() {
+	ManagedReference<CreatureObject*> creature = getParent().get().castTo<CreatureObject*>();
+	PlayerManager* playerManager = server->getPlayerManager();
+
+	if (creature == nullptr)
+		return;
+
+	if (playerManager == nullptr)
+		return;
+
+	Reference<BaseClientProxy*> session = creature->getClient()->getSession();
+	String ipAddress = session->getIPAddress();
+	setIpAddress(ipAddress);
+
+	Locker plocker(creature);
+
+	if (creature->getFaction() != 0 && creature->getFactionStatus() == FactionStatus::ONLEAVE)
+		creature->setFactionStatus(FactionStatus::COVERT);
+
+	if (creature->hasSkill("force_title_jedi_rank_03") && creature->getFactionStatus() != FactionStatus::OVERT)
+		creature->setFactionStatus(FactionStatus::OVERT);
+
+	if (!hasGodMode() && creature->hasSkill("force_title_jedi_rank_01") && SkillManager::instance()->getForceSensitiveSkillCount(creature, false) < 24) {
+		creature->setRootedState(172800);
+		creature->setSpeedMultiplierBase(0.f, true);
+		creature->sendSystemMessage("FS SKILL REQUIRMENT: Your character is frozen due to not meeting the FS Skill Requirement. Please contact support.");
+	}
+
+	int galaxyId = creature->getZoneServer()->getGalaxyID();
+
+	StringBuffer query;
+	StringBuffer query1;
+	query << "SELECT * FROM account_data WHERE account_id = '" << getAccountID()
+			<< "' AND `galaxy_id` = '" << galaxyId << "' LIMIT 1;";
+	ResultSet* result = ServerDatabase::instance()->executeQuery(query);
+
+	if (!result->next()) {
+		query1 << "INSERT INTO `account_data` (`account_id`, `galaxy_id`)"
+				<< " VALUES (" << getAccountID() << "," << galaxyId <<  ")";
+
+		ServerDatabase::instance()->executeStatement(query1);
+	}
+
+	//UnequipBrokenWearables
+	unequipBrokenWearables();
+
+	//UnequipSkillWearables
+	unequipSkillWearables();
+
+	//Event System
+	if (ConfigManager::instance()->getEventSystemEnabled()) {
+		int awardedBadge = ConfigManager::instance()->getAwardedBadge();
+		String awardedItem1 = ConfigManager::instance()->getAwardedItem1();
+		String awardedItem2 = ConfigManager::instance()->getAwardedItem2();
+
+		//Grant Badge If Enabled
+		if (ConfigManager::instance()->getAwardBadgeEnabled()) {
+			if (!hasBadge(awardedBadge))
+				awardBadge(awardedBadge);
+		}
+
+		//Grant Item If Enabled And Not Already Claimed
+		if (ConfigManager::instance()->getAwardItemEnabled()) {
+			int hasClaimedReward = 1;
+
+			StringBuffer query;
+			query << "SELECT reward_claimed FROM account_data WHERE account_id = '" << getAccountID()
+					<< "' AND `galaxy_id` = '" << galaxyId << "' LIMIT 1;";
+			ResultSet* result = ServerDatabase::instance()->executeQuery(query);
+
+			if (result->next())
+				hasClaimedReward = result->getInt(0);
+
+			if (hasClaimedReward == 0) {
+				if (awardedItem1.contains(",")) {
+					awardedItem1.replaceAll(" ", "");
+					Vector<String> awards;
+
+					while(awardedItem1.contains(",")) {
+						String award = awardedItem1.subString(0, awardedItem1.indexOf(","));
+						awards.add(award);
+						awardedItem1 = awardedItem1.replaceFirst(award + ",", "");
+					}
+
+					if (awardedItem1 != "") awards.add(awardedItem1);
+
+					int awardOptions = awards.size() - 1;
+					int awardIndex1 = System::random(awardOptions);
+					int awardIndex2 = System::random(awardOptions);
+
+					if (awards.size() >= 2 && awardIndex1 == awardIndex2) {
+						// move the index +1 for 2nd
+						if (awardIndex2 == awardOptions) {
+							awardIndex2 = 0;
+						} else {
+							awardIndex2 = awardIndex2 + 1;
+						}
+					}
+
+					awardedItem1 = awards.get(awardIndex1);
+					awardedItem2 = awards.get(awardIndex2);
+				}
+
+				ManagedReference<SceneObject*> inventory = creature->getSlottedObject("inventory");
+
+				if (awardedItem1 != "") {
+
+					ManagedReference<SceneObject*> eventReward1 = server->getZoneServer()->createObject(awardedItem1.hashCode(), 1);
+
+					if (inventory->transferObject(eventReward1, -1)) {
+						inventory->broadcastObject(eventReward1, true);
+					} else {
+						eventReward1->destroyObjectFromDatabase(true);
+					}
+				}
+
+				if (awardedItem2 != "") {
+					ManagedReference<SceneObject*> eventReward2 = server->getZoneServer()->createObject(awardedItem2.hashCode(), 1);
+
+					if (inventory->transferObject(eventReward2, -1)) {
+						inventory->broadcastObject(eventReward2, true);
+					} else {
+						eventReward2->destroyObjectFromDatabase(true);
+					}
+				}
+
+				creature->sendSystemMessage("Awakening Event System: You have just received one or more event items. They have been placed in your inventory.");
+
+				StringBuffer query1;
+				query1 << "UPDATE account_data SET reward_claimed = '1' WHERE account_id = '" << getAccountID()
+						<< "' AND `galaxy_id` = '" << galaxyId << "'";
+				ServerDatabase::instance()->executeStatement(query1);
+			}
+		}
+	}
+
+	SkillManager* skillManager = creature->getZoneServer()->getSkillManager();
+
+	if (ConfigManager::instance()->getCityBazaarTerminalEnabled() && creature->hasSkill("social_politician_fiscal_02")) {
+		if (skillManager != nullptr && !hasAbility("installbazaarterminal")) {
+			Ability* ability = skillManager->getAbility("installBazaarTerminal");
+
+			if (ability != nullptr) {
+				addAbility(ability, true);
+			}
+		}
+	}
+
+	//Schedule Player Bounty Removal Task
+	if (!creature->hasSkill("force_title_jedi_rank_02"))
+		schedulePlayerBountyTask();
+}
+
+void PlayerObjectImplementation::awakeningNotifyOffline() {
+	ManagedReference<CreatureObject*> creature = getParent().get().castTo<CreatureObject*>();
+
+	if (creature == nullptr)
+		return;
+
+	//Schedule Player Bounty Removal Task
+	if (!creature->hasSkill("force_title_jedi_rank_02"))
+		schedulePlayerBountyTask();
+}
+
+Time PlayerObjectImplementation::getSpawnProtectionTimestamp() {
+	return spawnProtectionTimestamp;
+}
+
+void PlayerObjectImplementation::updateSpawnProtectionTimestamp() {
+	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
+	int spawnProtectTime = ConfigManager::instance()->getSpawnProtectionTime();
+
+	if (parent == nullptr)
+		return;
+
+	spawnProtectionTimestamp.updateToCurrentTime();
+	spawnProtectionTimestamp.addMiliTime(spawnProtectTime);
+
+	scheduleSpawnProtectionRemovalTask();
+	parent->broadcastPvpStatusBitmask();
+
+	}
+
+bool PlayerObjectImplementation::hasSpawnProtection() {
+	return !spawnProtectionTimestamp.isPast();
+}
+
+void PlayerObjectImplementation::scheduleSpawnProtectionRemovalTask(bool removeNow) {
+	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
+
+	if (parent == nullptr)
+		return;
+
+	if (spawnProtectionTask == nullptr) {
+		spawnProtectionTask = new SpawnProtectionRemovalTask(parent);
+	}
+
+	if (removeNow) {
+		spawnProtectionTimestamp.updateToCurrentTime();
+
+		if (spawnProtectionTask->isScheduled()) {
+			spawnProtectionTask->cancel();
+		}
+
+		spawnProtectionTask->execute();
+
+	} else if (!spawnProtectionTask->isScheduled()) {
+		if (hasSpawnProtection()) {
+			spawnProtectionTask->schedule(llabs(getSpawnProtectionTimestamp().miliDifference()));
+		} else {
+			spawnProtectionTask->execute();
+		}
+	}
+}
+
+void PlayerObjectImplementation::resetJedi() {
+	ManagedReference<CreatureObject*> creature = getParent().get().castTo<CreatureObject*>();
+
+	if (creature == nullptr)
+		return;
+
+	//Remove FRS Skills And Remove From FRS
+	FrsData* frsData = getFrsData();
+
+	if (frsData != nullptr && frsData->getRank() >= 0) {
+		ZoneServer* zoneServer = server->getZoneServer();
+		FrsManager* frsManager = zoneServer->getFrsManager();
+
+		if (frsManager != nullptr) {
+			Locker locker(creature);
+			frsManager->removeFromFrs(creature);
+		}
+	}
+
+	if (creature->hasSkill("force_title_jedi_rank_02")) {
+		SkillManager::instance()->surrenderPadawanSkills(creature, true);
+		creature->removeSkill("force_title_jedi_rank_02", true);
+
+		MissionManager* missionManager = creature->getZoneServer()->getMissionManager();
+		if (missionManager != nullptr)
+			missionManager->removePlayerFromBountyList(creature->getObjectID());
+	}
+
+	removeExperience("force_rank_xp", true);
+	removeExperience("jedi_general", true);
+	setJediState(1);
+}
+
+int PlayerObjectImplementation::getJediUnlockVariable(int var) {
+	ManagedReference<CreatureObject*> creature = getParent().get().castTo<CreatureObject*>();
+
+	String unlockColumn;
+	int unlockVar = 1000;
+
+	switch (var) {
+		case 1:
+			unlockColumn = ConfigManager::instance()->getJediColumn1();
+			break;
+		case 2:
+			unlockColumn = ConfigManager::instance()->getJediColumn2();
+			break;
+		case 3:
+			unlockColumn = ConfigManager::instance()->getJediColumn3();
+			break;
+		case 4:
+			unlockColumn = ConfigManager::instance()->getJediColumn4();
+			break;
+		case 5:
+			unlockColumn = ConfigManager::instance()->getJediColumn5();
+			break;
+		case 6:
+			unlockColumn = ConfigManager::instance()->getJediColumn6();
+			break;
+		case 7:
+			unlockColumn = ConfigManager::instance()->getJediColumn7();
+			break;
+		case 8:
+			unlockColumn = ConfigManager::instance()->getJediColumn8();
+			break;
+		case 9:
+			unlockColumn = ConfigManager::instance()->getJediColumn9();
+			break;
+		case 10:
+			unlockColumn = ConfigManager::instance()->getJediColumn10();
+			break;
+		case 11:
+			unlockColumn = ConfigManager::instance()->getJediColumn11();
+			break;
+		case 12:
+			unlockColumn = ConfigManager::instance()->getJediColumn12();
+			break;
+	};
+
+	StringBuffer query;
+	query << "SELECT " << unlockColumn << " FROM jedi_unlock WHERE character_oid = " << creature->getObjectID() << " LIMIT 1;";
+	ResultSet* result = ServerDatabase::instance()->executeQuery(query);
+
+	if (result->next())
+		unlockVar = result->getInt(0);
+
+	return unlockVar;
+}
+
+void PlayerObjectImplementation::sendJediUnlockMessage() {
+	ZoneServer* zoneServer = server->getZoneServer();
+	bool msgEnabled = ConfigManager::instance()->getUnlockMessageEnabled();
+
+	if (zoneServer == nullptr)
+		return;
+
+	if (msgEnabled && getUnlockAnnounced() == 0) {
+		ChatManager* chatManager = zoneServer->getChatManager();
+		chatManager->broadcastGalaxy(nullptr, ConfigManager::instance()->getUnlockMessage());
+		setUnlockAnnounced(1);
+	}
+}
+
+Time PlayerObjectImplementation::getPlayerBountyTaskTimestamp() {
+	return playerBountyTaskTimestamp;
+}
+
+void PlayerObjectImplementation::updatePlayerBountyTaskTimestamp() {
+	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
+
+	if (parent == nullptr)
+		return;
+
+	playerBountyTaskTimestamp.updateToCurrentTime();
+	playerBountyTaskTimestamp.addMiliTime(ConfigManager::instance()->getPlayerBountyTaskTime());
+
+	schedulePlayerBountyTask();
+}
+
+void PlayerObjectImplementation::schedulePlayerBountyTask(bool removeNow) {
+	ManagedReference<CreatureObject*> parent = getParent().get().castTo<CreatureObject*>();
+
+	if (parent == nullptr)
+		return;
+
+	if (playerBountyTask == nullptr)
+		playerBountyTask = new PlayerBountyTask(parent);
+
+	if (removeNow) {
+		playerBountyTaskTimestamp.updateToCurrentTime();
+
+		if (playerBountyTask->isScheduled()) {
+			playerBountyTask->cancel();
+		}
+
+		playerBountyTask->execute();
+
+	} else if (!playerBountyTask->isScheduled()) {
+		if (hasPlayerBounty())
+			playerBountyTask->schedule(llabs(playerBountyTaskTimestamp.miliDifference()));
+
+		playerBountyTask->execute();
+	}
+}
+
+void PlayerObjectImplementation::refundPlayerBountyCredits() {
+	ZoneServer* zoneServer = server->getZoneServer();
+	ManagedReference<CreatureObject*> creature = getParent().get().castTo<CreatureObject*>();
+	ManagedReference<CreatureObject*> bountyPlacer = zoneServer->getObject(getBountyPlacerId()).castTo<CreatureObject*>();
+
+	if (creature != nullptr && bountyPlacer != nullptr) {
+		ManagedReference<ChatManager*> chatManager = zoneServer->getChatManager();
+
+		String sender = "Bounty Hunters Guild";
+		UnicodeString subject("Player Bounty Failure");
+		String body = creature->getFirstName() + " has eluded even our best Bounty Hunters. Given this shameful failure, we have refunded 50% of the credits you placed on their head back into your bank account.";
+
+		chatManager->sendMail(sender, subject, body, bountyPlacer->getFirstName());
+
+		Locker locker(bountyPlacer);
+		bountyPlacer->addBankCredits(getBountyReward() / 2);
+	}
+
+	updatePlayerBountyTimestamp(0);
+	setBountyPlacerId(0);
+	setBountyReward(0);
+}
+
+void PlayerObjectImplementation::updateCharacterStats(const String& stat, int newValue) {
+	if (!ConfigManager::instance()->getCharacterStatsEnabled())
+		return;
+
+	ManagedReference<CreatureObject*> player = getParent().get().castTo<CreatureObject*>();
+
+	if (player == nullptr)
+		return;
+
+	if (isPrivileged())
+		return;
+
+	uint64 playerID = player->getObjectID();
+	int galaxyId = player->getZoneServer()->getGalaxyID();
+
+	StringBuffer statQuery;
+	statQuery << "UPDATE `character_stats` SET `" << stat.escapeString() << "` = '"  << newValue
+			<< "' WHERE `character_oid` = '" << playerID
+			<< "' AND `galaxy_id` = '" << galaxyId << "'";
+
+	try {
+		Reference<ResultSet*> result = ServerDatabase::instance()->executeQuery(statQuery);
+
+		if (result == nullptr) {
+			error("ERROR WHILE TRYING TO UPDATE PLAYER STATS. RESULT IS NULL.");
+		} else if (result.get()->getRowsAffected() > 1) {
+			error("More than one character with oid = " + String::valueOf(playerID) + " on galaxy id: " + String::valueOf(galaxyId));
+		} else if (result.get()->getRowsAffected() == 0) {
+			PlayerObject* ghost = player->getPlayerObject();
+
+			if (ghost == nullptr)
+				return;
+
+			if (ghost->isPrivileged())
+				return;
+
+			int faction = 0;
+
+			if (player->getFaction() == Factions::FACTIONREBEL)
+				faction = 1;
+			else if (player->getFaction() == Factions::FACTIONIMPERIAL)
+				faction = 2;
+
+			String firstname = player->getFirstName();
+			StringBuffer statsAddQuery;
+
+			statsAddQuery
+				<< "INSERT INTO `character_stats` (`character_oid`, `galaxy_id`, `firstname`, `faction`, `pvpkills`, `bountykills`, `pvekills`, `missionscompleted`)"
+				<< " VALUES (" << player->getObjectID() << "," << galaxyId << "," << "'" << firstname.escapeString() <<  "','" << faction << "','" << ghost->getPvpKills()
+				<< "','" << ghost->getBountyKills() << "','" << ghost->getPveKills() << "','" << ghost->getMissionsCompleted() << "')";
+
+			ServerDatabase::instance()->executeStatement(statsAddQuery);
+		}
+
+	} catch ( DatabaseException &err) {
+		info("database error " + err.getMessage(),true);
+	}
+}
+
+void PlayerObjectImplementation::unequipBrokenWearables() {
+	if (!ConfigManager::instance()->getUnequipBrokenWearablesEnabled())
+		return;
+
+	ManagedReference<CreatureObject*> player = getParent().get().castTo<CreatureObject*>();
+
+	if (player == nullptr)
+		return;
+
+	ZoneServer* zoneServer = server->getZoneServer();
+
+	if (zoneServer == nullptr)
+		return;
+
+	SceneObject* datapad = player->getSlottedObject("datapad");
+	SceneObject* defweapon = player->getSlottedObject("default_weapon");
+	SceneObject* bank = player->getSlottedObject("bank");
+
+	for (int i = 0; i < player->getSlottedObjectsSize(); ++i) {
+		SceneObject* container = player->getSlottedObject(i);
+
+		if (container == datapad || container == nullptr || container == bank || container == defweapon)
+			continue;
+
+		if (container->isTangibleObject()) {
+			ManagedReference<TangibleObject*> item = cast<TangibleObject*>(container);
+
+			if (item != nullptr && item->isWearableObject()) {
+				WearableObject* wearableObject = cast<WearableObject*>(item.get());
+
+				if (wearableObject != nullptr && wearableObject->isEquipped()) {
+					SceneObject* inventory = player->getSlottedObject("inventory");
+					int max = item->getMaxCondition();
+					int min = max - item->getConditionDamage();
+					bool isDisabled = (min == 0 || max == 1);
+
+					if (wearableObject->isEquipped() && isDisabled && !wearableObject->isWearableContainerObject()) {
+						ObjectController* objectController = zoneServer->getObjectController();
+
+						objectController->transferObject(wearableObject, inventory, wearableObject->getContainmentType(), true, true);
+						inventory->transferObject(wearableObject, -1, true);
+						player->sendSystemMessage("Your " + wearableObject->getDisplayedName() + " has been unequipped due to poor condition.");
+					}
+				}
+			}
+		}
+	}
+}
+
+void PlayerObjectImplementation::unequipSkillWearables() {
+	if (!ConfigManager::instance()->getUnequipSkillWearablesEnabled())
+		return;
+
+	ManagedReference<CreatureObject*> player = getParent().get().castTo<CreatureObject*>();
+
+	if (player == nullptr)
+		return;
+
+	ZoneServer* zoneServer = server->getZoneServer();
+
+	if (zoneServer == nullptr)
+		return;
+
+	SceneObject* datapad = player->getSlottedObject("datapad");
+	SceneObject* defweapon = player->getSlottedObject("default_weapon");
+	SceneObject* bank = player->getSlottedObject("bank");
+
+	for (int i = 0; i < player->getSlottedObjectsSize(); ++i) {
+		SceneObject* container = player->getSlottedObject(i);
+
+		if (container == datapad || container == nullptr || container == bank || container == defweapon)
+			continue;
+
+		if (container->isTangibleObject()) {
+			ManagedReference<TangibleObject*> item = cast<TangibleObject*>(container);
+
+			if (item != nullptr && item->isWearableObject()) {
+				bool canEquip = false;
+				WearableObject* wearableObject = cast<WearableObject*>(item.get());
+
+				if (wearableObject != nullptr && wearableObject->isEquipped()) {
+					SharedTangibleObjectTemplate* tanoData = dynamic_cast<SharedTangibleObjectTemplate*>(wearableObject->getObjectTemplate());
+
+					if (tanoData != nullptr) {
+						const Vector<String>& skillsRequired = tanoData->getCertificationsRequired();
+
+						if (skillsRequired.size() > 0) {
+							for (int i = 0; i < skillsRequired.size(); i++) {
+								const String& skill = skillsRequired.get(i);
+
+								if (!skill.isEmpty() && player->hasSkill(skill)) {
+									canEquip = true;
+									break;
+								}
+							}
+
+						} else {
+							// there are no skill requirements
+							canEquip = true;
+						}
+					}
+
+					SceneObject* inventory = player->getSlottedObject("inventory");
+
+					if (wearableObject->isEquipped() && !canEquip && !wearableObject->isWearableContainerObject()) {
+						ObjectController* objectController = zoneServer->getObjectController();
+
+						objectController->transferObject(wearableObject, inventory, wearableObject->getContainmentType(), true, true);
+						inventory->transferObject(wearableObject, -1, true);
+						player->sendSystemMessage("Your " + wearableObject->getDisplayedName() + " has been unequipped due to lack of skill requirements.");
+					}
+				}
+			}
+		}
+	}
+}
+
 bool PlayerObjectImplementation::isIgnoring(const String& name) const {
 	return !name.isEmpty() && ignoreList.contains(name);
 }
@@ -2959,6 +3592,10 @@ void PlayerObjectImplementation::checkAndShowTOS() {
 	if (creature == nullptr)
 		return;
 
+	setMutedState(true);
+	creature->setRootedState(172800);
+	creature->setSpeedMultiplierBase(0.f, true);
+
 	ManagedReference<SuiMessageBox*> box = new SuiMessageBox(creature, SuiWindowType::NONE);
 	box->setPromptTitle("Terms Of Service");
 	box->setPromptText(tosText);
@@ -2969,10 +3606,14 @@ void PlayerObjectImplementation::checkAndShowTOS() {
 		if (ghost == nullptr)
 			return;
 
-		if (eventIndex == 0)
+		if (eventIndex == 0) {
 			ghost->setAcceptedTOSVersion(ConfigManager::instance()->getTermsOfServiceVersion());
-		else
+			ghost->setMutedState(false);
+			player->removeStateBuff(CreatureState::FROZEN);
+			player->setSpeedMultiplierBase(1.f, true);
+		} else {
 			ghost->checkAndShowTOS();
+		}
 	}, getZoneServer(), "TosCallback"));
 
 	addSuiBox(box);

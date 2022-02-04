@@ -28,9 +28,24 @@
 #include "server/zone/managers/frs/FrsManager.h"
 
 void PetControlDeviceImplementation::callObject(CreatureObject* player) {
-	if (player->isInCombat() || player->isDead() || player->isIncapacitated() || player->getPendingTask("tame_pet") != nullptr) {
-		player->sendSystemMessage("@pet/pet_menu:cant_call"); // You cannot call this pet right now.
-		return;
+	// assume the pet can be called
+	bool canCallPet = true;
+
+	// make sure the player is a creature handler if in combat
+	if (player->isInCombat()) {
+		if (!player->hasSkill("outdoors_creaturehandler_novice"))
+			canCallPet = false;
+	}
+
+	// follow normal rules
+	if (player->isDead() || player->isIncapacitated() || player->getPendingTask("tame_pet") != nullptr)
+		canCallPet = false;
+
+	if (!canCallPet) {
+		if (player->isInCombat() || player->isDead() || player->isIncapacitated() || player->getPendingTask("tame_pet") != nullptr) {
+			player->sendSystemMessage("@pet/pet_menu:cant_call"); // You cannot call this pet right now.
+			return;
+		}
 	}
 
 	if (player->isRidingMount()) {
@@ -178,7 +193,7 @@ void PetControlDeviceImplementation::callObject(CreatureObject* player) {
 			if (object->isCreature() && petType == PetManager::CREATUREPET) {
 				const CreatureTemplate* activePetTemplate = object->getCreatureTemplate();
 
-				if (activePetTemplate == nullptr || activePetTemplate->getTemplateName() == "at_st")
+				if (activePetTemplate == nullptr || activePetTemplate->getTemplateName() == "at_st" || activePetTemplate->getTemplateName() == "at_xt")
 					continue;
 
 				if (++currentlySpawned >= maxPets) {
@@ -201,10 +216,11 @@ void PetControlDeviceImplementation::callObject(CreatureObject* player) {
 				const CreatureTemplate* activePetTemplate = object->getCreatureTemplate();
 				const CreatureTemplate* callingPetTemplate = pet->getCreatureTemplate();
 
-				if (activePetTemplate == nullptr || callingPetTemplate == nullptr || activePetTemplate->getTemplateName() != "at_st")
+				if (activePetTemplate == nullptr || callingPetTemplate == nullptr || (activePetTemplate->getTemplateName() != "at_st" && activePetTemplate->getTemplateName() != "at_xt"))
 					continue;
 
-				if (++currentlySpawned >= maxPets || (activePetTemplate->getTemplateName() == "at_st" && callingPetTemplate->getTemplateName() == "at_st")) {
+				if (++currentlySpawned >= maxPets || ((activePetTemplate->getTemplateName() == "at_st" && callingPetTemplate->getTemplateName() == "at_st") ||
+						(activePetTemplate->getTemplateName() == "at_xt" && callingPetTemplate->getTemplateName() == "at_xt"))) {
 					player->sendSystemMessage("@pet/pet_menu:at_max"); // You already have the maximum number of pets of this type that you can call.
 					return;
 				}
@@ -224,15 +240,27 @@ void PetControlDeviceImplementation::callObject(CreatureObject* player) {
 		server->getZoneServer()->getPlayerManager()->handleAbortTradeMessage(player);
 	}
 
-	if (player->getCurrentCamp() == nullptr && player->getCityRegion() == nullptr) {
+	// get the modified delay if this is a creature pet
+	// default/min delay variables defined for clarity
+	int defaultDelay = 15;
+	int minimumDelay = 0;
+	int petDelaySeconds = petType == PetManager::CREATUREPET ?  getCreaturePetDelay(player, defaultDelay, minimumDelay) : defaultDelay;
 
+	// if the player is not in a camp, city, or has a pet delay
+	if (player->getCurrentCamp() == nullptr && player->getCityRegion() == nullptr && petDelaySeconds > 0) {
 		Reference<CallPetTask*> callPet = new CallPetTask(_this.getReferenceUnsafeStaticCast(), player, "call_pet");
+			
+		// If the player is a CH send the appropriate mesage.  Otherwise use the default.
+		if (player->hasSkill("outdoors_creaturehandler_novice")){
+			player->sendSystemMessage("Calling pet.");
 
-		StringIdChatParameter message("pet/pet_menu", "call_pet_delay"); // Calling pet in %DI seconds. Combat will terminate pet call.
-		message.setDI(15);
-		player->sendSystemMessage(message);
+		} else {
+			StringIdChatParameter message("pet/pet_menu", "call_pet_delay"); // Calling pet in %DI seconds. Combat will terminate pet call.
+			message.setDI(petDelaySeconds);
+			player->sendSystemMessage(message);
+		}
 
-		player->addPendingTask("call_pet", callPet, 15 * 1000);
+		player->addPendingTask("call_pet", callPet, petDelaySeconds * 1000);
 
 		if (petControlObserver == nullptr) {
 			petControlObserver = new PetControlObserver(_this.getReferenceUnsafeStaticCast());
@@ -1269,4 +1297,19 @@ void PetControlDeviceImplementation::setVitality(int vit) {
 			}
 		}, "PetSetVitalityLambda");
 	}
+}
+
+float PetControlDeviceImplementation::getCreaturePetDelay(CreatureObject* player, int defaultDelay, int minimumDelay){
+    // if the player is master CH there is no delay
+    // start with the default and reduce by 20% for each level trained in creature management
+    float reductionPercentage = 0;
+    if (player->hasSkill("outdoors_creaturehandler_support_01")) reductionPercentage += 0.20;
+    if (player->hasSkill("outdoors_creaturehandler_support_02")) reductionPercentage += 0.20;
+    if (player->hasSkill("outdoors_creaturehandler_support_03")) reductionPercentage += 0.20;
+    if (player->hasSkill("outdoors_creaturehandler_support_04")) reductionPercentage += 0.20;
+    if (player->hasSkill("outdoors_creaturehandler_master")) reductionPercentage += 0.20;
+    float modifiedDelay = defaultDelay - (defaultDelay * reductionPercentage);
+
+    // use the minimum delay if it is larger than the modified delay
+    return modifiedDelay < minimumDelay ? minimumDelay : modifiedDelay;
 }

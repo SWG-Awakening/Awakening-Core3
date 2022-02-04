@@ -141,7 +141,12 @@ void FrsManagerImplementation::loadLuaConfig() {
 	Lua* lua = new Lua();
 	lua->init();
 
-	if (!lua->runFile("scripts/managers/jedi/frs_manager.lua")) {
+	bool res = lua->runFile("custom_scripts/managers/jedi/frs_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/jedi/frs_manager.lua");
+
+	if (!res) {
 		error("Unable to load FrsManager data.");
 		delete lua;
 		return;
@@ -769,6 +774,8 @@ void FrsManagerImplementation::updatePlayerSkills(CreatureObject* player) {
 			if (!player->hasSkill(rankSkill))
 				skillManager->awardSkill(rankSkill, player, true, true, true);
 
+			if (rank == 0 && !player->hasSkill("force_title_jedi_rank_03"))
+				player->addSkill("force_title_jedi_rank_03", true);
 			if (rank == 4 && !player->hasSkill("force_title_jedi_rank_04"))
 				player->addSkill("force_title_jedi_rank_04", true);
 			if (rank == 8 && !player->hasSkill("force_title_jedi_master"))
@@ -1049,54 +1056,30 @@ int FrsManagerImplementation::calculatePvpExperienceChange(CreatureObject* attac
 	if (attackerGhost == nullptr || victimGhost == nullptr)
 		return 0;
 
-	int targetRating = 0;
-	int opponentRating = 0;
-
 	PlayerObject* playerGhost = nullptr;
 	PlayerObject* opponentGhost = nullptr;
 
 	if (isVictim) {
-		targetRating = victimGhost->getPvpRating();
-		opponentRating = attackerGhost->getPvpRating();
-
 		playerGhost = victimGhost;
 		opponentGhost = attackerGhost;
 	} else {
-		targetRating = attackerGhost->getPvpRating();
-		opponentRating = victimGhost->getPvpRating();
-
 		playerGhost = attackerGhost;
 		opponentGhost = victimGhost;
 	}
 
-	int ratingDiff = abs(targetRating - opponentRating);
-
-	if (ratingDiff > 2000)
-		ratingDiff = 2000;
-
-	float xpAdjustment = ((float)ratingDiff / 2000.f) * 0.5f;
 	int xpChange = getBaseExperienceGain(playerGhost, opponentGhost, !isVictim);
 
-	if (xpChange != 0) {
+	if (xpChange != 0)
 		xpChange = (int)((float)xpChange * contribution);
-
-		// Adjust xp value depending on pvp rating
-		// A lower rated victim will lose less experience, a higher rated victim will lose more experience
-		// A lower rated victor will gain more experience, a higher rated victor will gain less experience
-		if ((targetRating < opponentRating && isVictim) || (targetRating > opponentRating && !isVictim)) {
-			xpChange -= (int)((float)xpChange * xpAdjustment);
-		} else {
-			xpChange += (int)((float)xpChange * xpAdjustment);
-		}
-	}
 
 	return xpChange;
 }
 
 int FrsManagerImplementation::getBaseExperienceGain(PlayerObject* playerGhost, PlayerObject* opponentGhost, bool playerWon) {
+	ManagedReference<CreatureObject*> player = playerGhost->getParentRecursively(SceneObjectType::PLAYERCREATURE).castTo<CreatureObject*>();
 	ManagedReference<CreatureObject*> opponent = opponentGhost->getParentRecursively(SceneObjectType::PLAYERCREATURE).castTo<CreatureObject*>();
 
-	if (opponent == nullptr)
+	if (player == nullptr || opponent == nullptr)
 		return 0;
 
 	FrsData* playerData = playerGhost->getFrsData();
@@ -1112,7 +1095,7 @@ int FrsManagerImplementation::getBaseExperienceGain(PlayerObject* playerGhost, P
 
 	String key = "";
 
-	if (opponent->hasSkill("combat_bountyhunter_master")) { // Opponent is MBH
+	if (opponent->hasBountyMissionFor(player) || opponent->hasSkill("combat_bountyhunter_master")) { // Opponent Has Mission For Player Or is MBH
 		key = "bh_";
 	} else if (opponentRank >= 0 && opponent->hasSkill("force_title_jedi_rank_03")) { // Opponent is at least a knight
 		key = "rank" + String::valueOf(opponentRank) + "_";
@@ -1151,11 +1134,24 @@ void FrsManagerImplementation::sendVoteSUI(CreatureObject* player, SceneObject* 
 
 	Locker locker(player);
 
+	String councilString;
+	String stfRank;
+
+	if (enclaveType == COUNCIL_LIGHT)
+		councilString = "light";
+	else if (enclaveType == COUNCIL_DARK)
+		councilString = "dark";
+
 	Vector<String> elementList;
 
 	for (int i = 1; i < 12; i++) {
-		String stfRank = "@force_rank:rank" + String::valueOf(i);
-		String rankString = StringIdManager::instance()->getStringId(stfRank.hashCode()).toString();
+		if (i >= 1 && i <= 9)
+			stfRank = "@skl_n:force_rank_" + councilString + "_rank_0" + String::valueOf(i);
+		else if (i == 10)
+			stfRank = "@skl_n:force_rank_" + councilString + "_rank_10";
+		else if (i == 11)
+			stfRank = "@skl_n:force_rank_" + councilString + "_master";
+
 		elementList.add(stfRank);
 	}
 

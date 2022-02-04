@@ -21,7 +21,9 @@ void VendorOutfitManager::loadLuaOutfits() {
 	Lua lua;
 	lua.init();
 
-	lua.runFile("scripts/mobile/wearables/outfits.lua");
+	bool res = lua.runFile("custom_scripts/mobile/wearables/outfits.lua");
+	if (!res)
+		res = lua.runFile("scripts/mobile/wearables/outfits.lua");
 
 	LuaObject Luaoutfits = lua.getGlobalObject("Outfits");
 

@@ -88,6 +88,39 @@ public:
 
 			creatureBank->sendWithoutParentTo(creature);
 			creatureBank->openContainerTo(creature);
+		} else if (container == "skills") {
+			ManagedReference<PlayerObject*> targetGhost = targetObj->getPlayerObject();
+			Locker locker(targetObj);
+
+			SkillManager* skillManager = SkillManager::instance();
+			const SkillList* skillList = targetObj->getSkillList();
+                        StringBuffer body;
+
+			if (skillList == nullptr){
+				return GENERALERROR;
+			}
+
+			body << "Player Name:\t" << targetObj->getFirstName();
+			body << "\nSkills on Character:\n";
+			String skillName = "";
+			Vector<String> listOfNames;
+			skillList->getStringList(listOfNames);
+			SkillList copyOfList;
+			copyOfList.loadFromNames(listOfNames);
+
+					for (int i = 0; i < copyOfList.size(); i++) {
+						Skill* skill = copyOfList.get(i);
+						String skillName = skill->getSkillName();
+						body <<  skillName << "\n";
+					}
+					ManagedReference<SuiMessageBox*> box = new SuiMessageBox(creature, 0);
+					box->setPromptTitle("Skill Info");
+					box->setPromptText(body.toString());
+					box->setUsingObject(targetObj);
+					box->setForceCloseDisabled();
+
+					ghost->addSuiBox(box);
+					creature->sendMessage(box->generateMessage());
 		} else if (container == "credits") {
 			int cash = targetObj->getCashCredits();
 			int bank = targetObj->getBankCredits();
@@ -484,7 +517,10 @@ public:
 
 			body << "    Zone:\t";
 			Zone* zone = structure->getZone();
-			if (zone == nullptr) {
+
+			if (structure->isPackedUp()) {
+				body << "Packed Up" << endl;
+			} else if (zone == nullptr) {
 				body << "nullptr" << endl;
 			} else {
 				body << zone->getZoneName() << endl;

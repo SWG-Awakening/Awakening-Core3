@@ -52,6 +52,9 @@
 #include "server/zone/managers/gcw/sessions/ContrabandScanSession.h"
 #include "server/zone/managers/gcw/sessions/WildContrabandScanSession.h"
 
+#include "server/zone/objects/area/FactionalArea.h"
+#include "server/chat/ChatManager.h"
+
 void GCWManagerImplementation::initialize() {
 	loadLuaConfig();
 }
@@ -68,7 +71,11 @@ void GCWManagerImplementation::loadLuaConfig() {
 
 	Lua* lua = new Lua();
 	lua->init();
-	lua->runFile("scripts/managers/gcw_manager.lua");
+
+	bool res = lua->runFile("custom_scripts/managers/gcw_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/gcw_manager.lua");
 
 	gcwCheckTimer = lua->getGlobalInt("gcwCheckTimer");
 	vulnerabilityDuration = lua->getGlobalInt("vulnerabilityDuration");
@@ -451,6 +458,10 @@ bool GCWManagerImplementation::hasTooManyBasesNearby(int x, int y) {
 
 void GCWManagerImplementation::registerGCWBase(BuildingObject* building, bool initializeBase) {
 	if (!hasBase(building)) {
+		int baseType = building->getFactionBaseType();
+		if (ConfigManager::instance()->getTefEnabled() && !(building->getPvpStatusBitmask() & CreatureFlag::OVERT) && baseType == PLAYERFACTIONBASE)
+			addFactionalArea(building);
+
 		if (building->getFaction() == Factions::FACTIONIMPERIAL)
 			imperialBases++;
 		else if (building->getFaction() == Factions::FACTIONREBEL)
@@ -1320,6 +1331,7 @@ void GCWManagerImplementation::completeSecuritySlice(CreatureObject* creature, T
 	creature->sendSystemMessage("@slicing/slicing:hq_security_success"); // You have managed to slice into the terminal. The security protocol for the override terminal has been significantly relaxed.
 	Locker block(building);
 	baseData->setState(DestructibleBuildingDataComponent::SLICED);
+	broadcastBaseAttack(building);
 
 	activateBaseAlarms(building, HACKALARM);
 }
@@ -1596,6 +1608,7 @@ void GCWManagerImplementation::processDNASample(CreatureObject* creature, Tangib
 		creature->sendSystemMessage("Sequencing complete! You disable the security override for the facility...");
 		baseData->setState(DestructibleBuildingDataComponent::DNA);
 		awardSlicingXP(creature, "bio_engineer_dna_harvesting", 1000);
+		broadcastBaseAttack(building);
 		constructDNAStrand(building);
 		return;
 	}
@@ -1726,6 +1739,7 @@ void GCWManagerImplementation::handlePowerRegulatorSwitch(CreatureObject* creatu
 		creature->sendSystemMessage("@faction/faction_hq/faction_hq_response:alignment_complete"); // Alignment complete! The facility may now be set to overload from the primary terminal!
 		baseData->setState(DestructibleBuildingDataComponent::OVERLOADED);
 		awardSlicingXP(creature, "combat_rangedspecialize_heavy", 1000);
+		broadcastBaseAttack(building);
 		randomizePowerRegulatorSwitches(building);
 	} else {
 		sendPowerRegulatorControls(creature, building, powerRegulator);
@@ -1883,6 +1897,24 @@ void GCWManagerImplementation::doBaseDestruction(BuildingObject* building) {
 
 			owner->sendSystemMessage(message);
 		}
+
+		if (ConfigManager::instance()->getTefEnabled()) {
+			SortedVector<ManagedReference<ActiveArea* > >* areas = building->getActiveAreas();
+			ManagedReference<ActiveArea*> area = nullptr;
+			for (int i = 0; i < areas->size(); ++i) {
+				area = areas->get(i);
+				if (area->isFactionalArea()) {
+					break;
+				}
+				area == nullptr;
+			}
+			FactionalArea* baseArea = cast<FactionalArea*>(area.get());
+
+			if (baseArea != nullptr) {
+				Locker areaLocker(baseArea);
+				baseArea->destroyObjectFromWorld(true);
+			}
+		}
 	}
 
 	unregisterGCWBase(building);
@@ -1919,6 +1951,31 @@ void GCWManagerImplementation::broadcastBuilding(BuildingObject* building, Strin
 				targetPlayer->sendSystemMessage(params);
 		}
 	}
+}
+
+void GCWManagerImplementation::broadcastBaseAttack(BuildingObject* building) {
+	if (building->getFaction() == Factions::FACTIONNEUTRAL) return;
+
+	Vector3 location = building->getEjectionPoint();
+	String waypoint = String::valueOf((int)location.getX()) + ", " + String::valueOf((int)location.getY());
+	String imperialMessage = " \\#0000FF[Imperial]\\#FFFFFF ";
+	String rebelMessage = " \\#800000[Rebel]\\#FFFFFF ";
+	ChatManager* chatManager = zone->getZoneServer()->getChatManager();
+	String planet = zone->getZoneName();
+
+	if (building->getFaction() == Factions::FACTIONIMPERIAL) {
+		imperialMessage += "The Alliance has launched an attack on an Imperial garrison!    All Special Forces report to "
+				+ planet.toUpperCase() + "(" + waypoint + ").";
+		rebelMessage += "Rebel Forces have launched an attack on an Imperial stronghold!  Any available troops are requested to provide cover from Imperial defenses on "
+				+ planet.toUpperCase() + "(" + waypoint + ").";
+	} else {
+		imperialMessage += "Imperial Forces have launched an attack on an Alliance encampment!  All available troops are required assist in thwarting the resistance.  Report to "
+				+ planet.toUpperCase() + "(" + waypoint + ").";
+		rebelMessage += "Our base has been discovered by the Empire and is under heavy fire!  Any available Rebel Forces are requested to defend our base on "
+				+ planet.toUpperCase() + "(" + waypoint + ").";
+	}
+	chatManager->broadcastGalaxy(imperialMessage, "imperial");
+	chatManager->broadcastGalaxy(rebelMessage, "rebel");
 }
 
 void GCWManagerImplementation::startAbortSequenceDelay(BuildingObject* building, CreatureObject* creature, SceneObject* hqTerminal) {
@@ -2224,6 +2281,7 @@ void GCWManagerImplementation::notifyTurretDestruction(BuildingObject* building,
 
 	baseData->setTurretID(indx, 0);
 
+	broadcastBaseAttack(building);
 	turret->destroyObjectFromWorld(true);
 	turret->destroyObjectFromDatabase(true);
 
@@ -2250,6 +2308,7 @@ void GCWManagerImplementation::notifyMinefieldDestruction(BuildingObject* buildi
 			defensecount++;
 	}
 
+	broadcastBaseAttack(building);
 	minefield->destroyObjectFromWorld(true);
 	minefield->destroyObjectFromDatabase(true);
 }
@@ -2941,6 +3000,21 @@ int GCWManagerImplementation::countContrabandItems(CreatureObject* player) {
 	}
 
 	return numberOfContrabandItems;
+}
+
+void GCWManagerImplementation::addFactionalArea(BuildingObject* building) {
+	ManagedReference<FactionalArea*> baseArea = zone->getZoneServer()->createObject(STRING_HASHCODE("object/factional_area.iff"), 0).castTo<FactionalArea*>();
+	Zone* baseZone = building->getZone();
+
+	if (baseArea != nullptr) {
+		Locker areaLocker(baseArea);
+
+		baseArea->setAreaFaction(building->getFaction());
+		baseArea->initializePosition(building->getPositionX(), building->getPositionZ(), building->getPositionY());
+		baseArea->setRadius(32.f);
+		zone->transferObject(baseArea, -1, true);
+		building->addActiveArea(baseArea);
+	}
 }
 
 void GCWManagerImplementation::spawnBaseTerminals(BuildingObject* bldg) {

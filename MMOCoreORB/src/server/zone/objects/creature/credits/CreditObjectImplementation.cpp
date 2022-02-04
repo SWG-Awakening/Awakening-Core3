@@ -6,6 +6,19 @@
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "server/zone/managers/credit/CreditManager.h"
 
+WeakReference<CreatureObject*> CreditObjectImplementation::getOwner() {
+	return owner;
+}
+
+void CreditObjectImplementation::setOwner(CreatureObject* obj) {
+	ownerObjectID = obj->getObjectID();
+	owner = obj;
+}
+
+uint64 CreditObjectImplementation::getOwnerObjectID() const {
+	return ownerObjectID;
+}
+
 void CreditObjectImplementation::setCashCredits(int credits, bool notifyClient) {
 	if (cashCredits == credits)
 		return;
@@ -25,19 +38,6 @@ void CreditObjectImplementation::setCashCredits(int credits, bool notifyClient) 
 		msg->close();
 		creo->sendMessage(msg);
 	}
-}
-
-WeakReference<CreatureObject*> CreditObjectImplementation::getOwner() {
-	return owner;
-}
-
-void CreditObjectImplementation::setOwner(CreatureObject* obj) {
-	ownerObjectID = obj->getObjectID();
-	owner = obj;
-}
-
-uint64 CreditObjectImplementation::getOwnerObjectID() const {
-	return ownerObjectID;
 }
 
 void CreditObjectImplementation::setBankCredits(int credits, bool notifyClient) {

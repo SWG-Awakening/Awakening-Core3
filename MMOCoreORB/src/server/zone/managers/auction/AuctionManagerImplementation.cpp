@@ -23,6 +23,8 @@
 #include "server/zone/objects/region/CityRegion.h"
 #include "server/zone/objects/building/BuildingObject.h"
 #include "server/zone/objects/waypoint/WaypointObject.h"
+#include "server/zone/objects/tangible/powerup/PowerupObject.h"
+#include "server/zone/objects/tangible/weapon/WeaponObject.h"
 #include "server/zone/Zone.h"
 #include "server/zone/ZoneServer.h"
 #include "server/chat/ChatManager.h"
@@ -95,14 +97,27 @@ void AuctionManagerImplementation::initialize() {
 		}
 
 		ManagedReference<SceneObject*> vendor = zoneServer->getObject(auctionItem->getVendorID());
+		bool vendorPackedUp = false;
 
-		if(vendor == nullptr || vendor->getZone() == nullptr) {
+		//Handle items on packed-up vendors
+		if (vendor != nullptr) {
+			DataObjectComponentReference* data = vendor->getDataObjectComponent();
+
+			if (data != nullptr && data->get() != nullptr && data->get()->isVendorData()) {
+				VendorDataComponent* vendorData = cast<VendorDataComponent*>(data->get());
+
+				if (vendorData != nullptr && vendorData->isPackedUp())
+					vendorPackedUp = true;
+			}
+		}
+
+		if (vendor == nullptr || (vendor->getZone() == nullptr && !vendorPackedUp)) {
 			if(auctionItem->isOnBazaar()) {
 				orphanedBazaarItems.add(auctionItem);
 				continue;
 			}
 
-			if(vendor != nullptr) {
+			if (vendor != nullptr) {
 				error() << "Vendor with no zone, deleting vendorObject: " << *vendor;
 				vendor->destroyObjectFromWorld(true);
 				vendor->destroyObjectFromDatabase();
@@ -365,8 +380,21 @@ void AuctionManagerImplementation::doAuctionMaint(TerminalListVector* items, con
 			ManagedReference<SceneObject*> vendor = zoneServer->getObject(item->getVendorID());
 			ManagedReference<PlayerManager*> playerManager = zoneServer->getPlayerManager();
 			String ownerName = playerManager->getPlayerName(item->getOwnerID());
+			bool vendorPackedUp = false;
 
-			if(vendor == nullptr || vendor->getZone() == nullptr || ownerName.isEmpty()) {
+			//Handle items on packed-up vendors
+			if (vendor != nullptr) {
+				DataObjectComponentReference* data = vendor->getDataObjectComponent();
+
+				if (data != nullptr && data->get() != nullptr && data->get()->isVendorData()) {
+					VendorDataComponent* vendorData = cast<VendorDataComponent*>(data->get());
+
+					if (vendorData != nullptr && vendorData->isPackedUp())
+						vendorPackedUp = true;
+				}
+			}
+
+			if (vendor == nullptr || (vendor->getZone() == nullptr && !vendorPackedUp) || ownerName.isEmpty()) {
 				StringBuffer errMsg;
 
 				if (vendor == nullptr) {
@@ -501,7 +529,7 @@ void AuctionManagerImplementation::doAuctionMaint(TerminalListVector* items, con
 	msg.flush();
 }
 
-void AuctionManagerImplementation::addSaleItem(CreatureObject* player, uint64 objectid, SceneObject* vendor, const UnicodeString& description, int price, uint32 duration, bool auction, bool premium) {
+void AuctionManagerImplementation::addSaleItem(CreatureObject* player, uint64 objectid, SceneObject* vendor, const UnicodeString& description, int price, uint32 duration, bool auction, bool premium, bool isRelist) {
 
 	if (vendor == nullptr || (!vendor->isVendor() && !vendor->isBazaarTerminal())) {
 		error() << "addSaleItem(plyer=" << player->getObjectID() << ", objectid=" << objectid << "): Not valid vendor object.";
@@ -524,6 +552,25 @@ void AuctionManagerImplementation::addSaleItem(CreatureObject* player, uint64 ob
 
 	ManagedReference<AuctionItem*> oldItem = auctionMap->getItem(objectid);
 	ManagedReference<SceneObject*> objectToSell = zoneServer->getObject(objectid);
+
+	if (objectToSell != nullptr && objectToSell->isWeaponObject()) {
+		ManagedReference<WeaponObject*> weapon = cast<WeaponObject*>(objectToSell.get());
+		if (weapon != nullptr && weapon->hasPowerup()) {
+			if (!isRelist) {
+				player->sendSystemMessage("Weapons cannot be placed for sale with a powerup equipped");
+				return;
+			} else {
+				Locker wlocker(weapon);
+				ManagedReference<PowerupObject*> pup = weapon->removePowerup();
+				if (pup != nullptr) {
+					Locker puplocker(pup);
+					pup->destroyObjectFromWorld(true);
+					pup->destroyObjectFromDatabase(true);
+				}
+			}
+		}
+	}
+
 	String vendorUID = getVendorUID(vendor);
 	bool stockroomSale = false;
 
@@ -611,7 +658,7 @@ void AuctionManagerImplementation::addSaleItem(CreatureObject* player, uint64 ob
 
 	// add city tax to the price
 	ManagedReference<CityRegion*> city = vendor->getCityRegion().get();
-	if (city != nullptr) {
+	if (city != nullptr && !isRelist) {
 		price *= (1.0f + (city->getSalesTax() / 100.0f));
 	}
 
@@ -1789,13 +1836,13 @@ void AuctionManagerImplementation::getItemAttributes(CreatureObject* player, uin
 	PlayerObject* ghost = player->getPlayerObject();
 
 	if (ghost != nullptr && ghost->isPrivileged()) {
-		msg->insertAttribute("Auction OID", String::valueOf(auctionItem->getObjectID()));
-		msg->insertAttribute("Item Type", auctionItem->getItemType());
+		msg->insertAttribute("auction_oid", String::valueOf(auctionItem->getObjectID()));
+		msg->insertAttribute("item_type", auctionItem->getItemType());
 		bool isCrate = auctionItem->isFactoryCrate();
-		msg->insertAttribute("Is Factory Crate:", isCrate);
+		msg->insertAttribute("is_factory_crate", isCrate);
 
 		if (isCrate) {
-			msg->insertAttribute("Crated Item Type:", auctionItem->getCratedItemType());
+			msg->insertAttribute("crated_item_type", auctionItem->getCratedItemType());
 		}
 	}
 

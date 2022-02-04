@@ -40,7 +40,10 @@ void MissionManagerImplementation::loadLuaSettings() {
 		Lua* lua = new Lua();
 		lua->init();
 
-		lua->runFile("scripts/managers/mission/mission_manager.lua");
+		bool res = lua->runFile("custom_scripts/managers/mission_manager.lua");
+
+		if (!res)
+			res = lua->runFile("scripts/managers/mission/mission_manager.lua");
 
 		LuaObject items = lua->getGlobalObject("crafting_mission_items");
 
@@ -851,6 +854,7 @@ void MissionManagerImplementation::randomizeGenericDestroyMission(CreatureObject
 
 	String messageDifficulty;
 	String missionType;
+	String groupSuffix;
 
 	if (difficulty < 2)
 		messageDifficulty = "_easy";
@@ -859,12 +863,23 @@ void MissionManagerImplementation::randomizeGenericDestroyMission(CreatureObject
 	else
 		messageDifficulty = "_hard";
 
-	if (lairTemplateObject->getMobType() == LairTemplate::NPC)
+	if (lairTemplateObject->getMobType() == LairTemplate::NPC) {
 		missionType = "_npc";
-	else
+		groupSuffix = " camp.";
+	} else {
 		missionType = "_creature";
+		groupSuffix = " lair.";
+	}
 
-	mission->setMissionTitle("mission/mission_destroy_neutral" + messageDifficulty + missionType, "m" + String::valueOf(randTexts) + "t");
+	const VectorMap<String, int>* mobiles = lairTemplateObject->getMobiles();
+	String mobileName = "mysterious";
+
+	if (mobiles->size() > 0) {
+		mobileName = mobiles->elementAt(0).getKey();
+	}
+
+	//mission->setMissionTitle("mission/mission_destroy_neutral" + messageDifficulty + missionType, "m" + String::valueOf(randTexts) + "t");
+	mission->setMissionTitle("CL" + String::valueOf(diffDisplay), " Destroy the " + mobileName.replaceAll("_", " ") + groupSuffix);
 	mission->setMissionDescription("mission/mission_destroy_neutral" +  messageDifficulty + missionType, "m" + String::valueOf(randTexts) + "d");
 
 	switch (faction) {
@@ -1053,9 +1068,17 @@ void MissionManagerImplementation::randomizeGenericBountyMission(CreatureObject*
 				creatorName = nm->makeCreatureName();
 			}
 
-			mission->setCreatorName(creatorName);
-			mission->setMissionTitle(stfFile, "m" + String::valueOf(randTexts) + "t");
-			mission->setMissionDescription(stfFile, "m" + String::valueOf(randTexts) + "d");
+			PlayerObject* ghost = creature->getPlayerObject();
+
+			if (ghost != nullptr && ghost->hasPlayerBounty()) {
+				mission->setCreatorName("Anonymous");
+				mission->setMissionTitle(stfFile, "m7t");
+				mission->setMissionDescription(stfFile, "m7d");
+			} else {
+				mission->setCreatorName(creatorName);
+				mission->setMissionTitle(stfFile, "m" + String::valueOf(randTexts) + "t");
+				mission->setMissionDescription(stfFile, "m" + String::valueOf(randTexts) + "d");
+			}
 		}
 	} else {
 		mission->setMissionTargetName(nm->makeCreatureName());
@@ -1901,7 +1924,7 @@ void MissionManagerImplementation::addPlayerToBountyList(uint64 targetId, int re
 	}
 }
 
-void MissionManagerImplementation::removePlayerFromBountyList(uint64 targetId) {
+void MissionManagerImplementation::removePlayerFromBountyList(uint64 targetId, bool failMissions) {
 	Locker listLocker(&playerBountyListMutex);
 
 	if (playerBountyList.contains(targetId)) {
@@ -1913,7 +1936,8 @@ void MissionManagerImplementation::removePlayerFromBountyList(uint64 targetId) {
 		const SortedVector<uint64>* bountyHunters = target->getBountyHunters();
 
 		for (int i = 0; i < bountyHunters->size(); i++) {
-			failPlayerBountyMission(bountyHunters->get(i));
+			if (failMissions)
+				failPlayerBountyMission(bountyHunters->get(i));
 		}
 
 		ObjectManager::instance()->destroyObjectFromDatabase(target->_getObjectID());
@@ -1934,11 +1958,6 @@ void MissionManagerImplementation::updatePlayerBountyOnlineStatus(uint64 targetI
 
 	if (playerBountyList.contains(targetId)) {
 		playerBountyList.get(targetId)->setOnline(status);
-
-		if (status)
-			info("Player jedi is now online: " + String::valueOf(targetId), true);
-		else
-			info("Player jedi is now offline: " + String::valueOf(targetId), true);
 	}
 }
 
@@ -2001,9 +2020,13 @@ bool MissionManagerImplementation::isBountyValidForPlayer(CreatureObject* player
 		return false;
 
 	auto targetGhost = creature->getPlayerObject();
+
+	if (targetGhost == nullptr)
+		return false;
+
 	float terminalVisibilityThreshold = VisibilityManager::instance()->getTerminalVisThreshold();
 
-	if (targetGhost == nullptr || targetGhost->getVisibility() < terminalVisibilityThreshold)
+	if (targetGhost->getVisibility() < terminalVisibilityThreshold && !targetGhost->hasPlayerBounty())
 		return false;
 
 	auto playerGhost = player->getPlayerObject();
@@ -2013,7 +2036,8 @@ bool MissionManagerImplementation::isBountyValidForPlayer(CreatureObject* player
 
 	uint64 accountId = playerGhost->getAccountID();
 
-	if (!enableSameAccountBountyMissions && targetGhost->getAccountID() == accountId)
+	if (!enableSameAccountBountyMissions && (targetGhost->getAccountID() == accountId || targetGhost->getIpAddress() == playerGhost->getIpAddress() ||
+			player->getGuildID() == creature->getGuildID()))
 		return false;
 
 	auto hunters = bounty->getBountyHunters();
@@ -2061,8 +2085,24 @@ void MissionManagerImplementation::completePlayerBounty(uint64 targetId, uint64 
 			} else {
 				ManagedReference<CreatureObject*> creo = server->getObject(activeBountyHunters.get(i)).castTo<CreatureObject*>();
 				auto ghost = creo->getPlayerObject();
+
 				if (ghost != nullptr)
 					ghost->schedulePvpTefRemovalTask(false, false, true);
+
+				ManagedReference<CreatureObject*> targetCreo = server->getObject(targetId).castTo<CreatureObject*>();
+				auto targetGhost = targetCreo->getPlayerObject();
+
+				if (targetGhost != nullptr && targetGhost->hasPlayerBounty()) {
+					int reward = targetGhost->getBountyReward();
+
+					creo->addBankCredits(reward, true);
+					creo->sendSystemMessage("Player Bounty Mission Success! " + String::valueOf(reward) + " credits have been deposited to your bank account.");
+					removePlayerFromBountyList(targetId, false);
+					targetGhost->setBountyPlacerId(0);
+					targetGhost->setBountyReward(0);
+					targetGhost->updatePlayerBountyTimestamp(0);
+					targetGhost->schedulePlayerBountyTask(true);
+				}
 			}
 		}
 	}
@@ -2081,6 +2121,7 @@ void MissionManagerImplementation::failPlayerBountyMission(uint64 bountyHunter) 
 
 			if (objective != nullptr) {
 				ManagedReference<CreatureObject*> player = objective->getPlayerOwner();
+				ManagedReference<CreatureObject*> target = server->getObject(mission->getTargetObjectId()).castTo<CreatureObject*>();
 
 				if (player != nullptr) {
 					player->sendSystemMessage("@mission/mission_generic:failed");
@@ -2088,6 +2129,12 @@ void MissionManagerImplementation::failPlayerBountyMission(uint64 bountyHunter) 
 					auto ghost = player->getPlayerObject();
 					if (ghost != nullptr)
 						ghost->schedulePvpTefRemovalTask(false, false, true);
+				}
+
+				if (target != nullptr) {
+					auto targetGhost = target->getPlayerObject();
+					if (targetGhost != nullptr)
+						targetGhost->schedulePvpTefRemovalTask(false, false, true);
 				}
 
 				objective->fail();

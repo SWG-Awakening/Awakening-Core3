@@ -87,7 +87,7 @@ DROP TABLE IF EXISTS `swgemu`.`account_log`;
 CREATE TABLE  `swgemu`.`account_log` (
   `acclog_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
   `account_id` int(10) unsigned NOT NULL,
-  `timestamp` datetime NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `ip_address` varchar(15) NOT NULL,
   PRIMARY KEY (`acclog_id`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
@@ -115,6 +115,7 @@ CREATE TABLE  `swgemu`.`accounts` (
   `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `active` tinyint(1) NOT NULL DEFAULT '1',
   `admin_level` tinyint(1) NOT NULL DEFAULT '0',
+  `inactive_staff` tinyint(1) NOT NULL DEFAULT '0',
   `salt` varchar(32) NOT NULL,
   PRIMARY KEY (`account_id`) USING BTREE
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1 ROW_FORMAT=DYNAMIC;
@@ -128,6 +129,27 @@ LOCK TABLES `accounts` WRITE;
 UNLOCK TABLES;
 /*!40000 ALTER TABLE `accounts` ENABLE KEYS */;
 
+
+--
+-- Definition of table `swgemu`.`account_data`
+--
+
+DROP TABLE IF EXISTS `swgemu`.`account_data`;
+CREATE TABLE  `swgemu`.`account_data` (
+  `account_id` int(10) unsigned NOT NULL DEFAULT 0,
+  `galaxy_id` int(5) unsigned NOT NULL DEFAULT 1,
+  `reward_claimed` tinyint(1) unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`account_id`) USING BTREE
+) ENGINE=MyISAM DEFAULT CHARSET=latin1;
+
+--
+-- Dumping data for table `swgemu`.`accounts`
+--
+
+/*!40000 ALTER TABLE `account_data` DISABLE KEYS */;
+LOCK TABLES `account_data` WRITE;
+UNLOCK TABLES;
+/*!40000 ALTER TABLE `account_data` ENABLE KEYS */;
 
 --
 -- Definition of table `swgemu`.`badge_areas`
@@ -227,6 +249,33 @@ CREATE TABLE  `swgemu`.`characters` (
 LOCK TABLES `characters` WRITE;
 UNLOCK TABLES;
 /*!40000 ALTER TABLE `characters` ENABLE KEYS */;
+
+
+--
+-- Definition of table `swgemu`.`character_stats`
+--
+
+DROP TABLE IF EXISTS `swgemu`.`character_stats`;
+CREATE TABLE  `swgemu`.`character_stats` (
+  `character_oid` bigint(20) NOT NULL,
+  `galaxy_id` int(5) unsigned NOT NULL DEFAULT '0',
+  `firstname` varchar(20) NOT NULL DEFAULT '',
+  `faction` int(5) NOT NULL DEFAULT '0',
+  `pvpkills` bigint(20) NOT NULL DEFAULT '0',
+  `bountykills` bigint(20) NOT NULL DEFAULT '0',
+  `pvekills` bigint(20) NOT NULL DEFAULT '0',
+  `missionscompleted` bigint(20) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`character_oid`)
+) ENGINE=MyISAM DEFAULT CHARSET=latin1;
+
+--
+-- Dumping data for table `swgemu`.`character_stats`
+--
+
+/*!40000 ALTER TABLE `character_stats` DISABLE KEYS */;
+LOCK TABLES `character_stats` WRITE;
+UNLOCK TABLES;
+/*!40000 ALTER TABLE `character_stats` ENABLE KEYS */;
 
 
 --

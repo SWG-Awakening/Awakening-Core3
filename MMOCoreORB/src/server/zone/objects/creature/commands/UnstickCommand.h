@@ -21,8 +21,10 @@ public:
 		if (!checkInvalidLocomotions(creature))
 			return INVALIDLOCOMOTION;
 
+		/* Silence /unstick Error
 		if (creature != nullptr)
 			creature->error("used /unstick " + arguments.toString());
+		*/
 
 		/*
 string/en/cmd_err.stf	7	unstick_in_progress	Unstick in progress

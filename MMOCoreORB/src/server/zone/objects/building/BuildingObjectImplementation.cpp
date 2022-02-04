@@ -38,6 +38,10 @@
 #include "server/zone/objects/building/components/DestructibleBuildingDataComponent.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 
+#include "server/zone/managers/vendor/VendorManager.h"
+#include "server/zone/objects/tangible/components/vendor/VendorDataComponent.h"
+
+
 void BuildingObjectImplementation::initializeTransientMembers() {
 	StructureObjectImplementation::initializeTransientMembers();
 
@@ -107,7 +111,7 @@ void BuildingObjectImplementation::notifyInsertToZone(Zone* zone) {
 #endif // DEBUG_STRUCTURE_MAINT
 }
 
-int BuildingObjectImplementation::getCurrentNumberOfPlayerItems() {
+int BuildingObjectImplementation::getCurrentNumberOfPlayerItems() const {
 	int items = 0;
 
 	for (int i = 0; i < cells.size(); ++i) {
@@ -117,6 +121,18 @@ int BuildingObjectImplementation::getCurrentNumberOfPlayerItems() {
 	}
 
 	return items;
+}
+
+int BuildingObjectImplementation::getCurrentNumberOfPlayerVendors() const {
+	int vendors = 0;
+
+	for (int i = 0; i < cells.size(); ++i) {
+		auto& cell = cells.get(i);
+
+		vendors += cell->getCurrentNumberOfPlayerVendors();
+	}
+
+	return vendors;
 }
 
 void BuildingObjectImplementation::createCellObjects() {
@@ -401,8 +417,7 @@ bool BuildingObjectImplementation::isAllowedEntry(CreatureObject* player) {
 
 	if (!isClientObject()) {
 		PlayerObject* ghost = player->getPlayerObject().get();
-
-		if (ghost != nullptr && ghost->hasPvpTef()) {
+		if (ghost != nullptr && (ghost->hasGcwTef() || ghost->hasBhTef())) {
 			return false;
 		}
 	}
@@ -893,9 +908,11 @@ void BuildingObjectImplementation::onEnter(CreatureObject* player) {
 
 		player->sendSystemMessage("@city/city:youre_city_banned"); // you are banned from this city and may not use any of its public services and structures
 	}
+
+	containedPlayers.add(player);
 }
 
-void BuildingObjectImplementation::onExit(CreatureObject* player, uint64 parentid) {
+void BuildingObjectImplementation::onExit(CreatureObject* player, uint64 parentid, bool removeFromContainedPlayerList) {
 	if (player == nullptr)
 		return;
 
@@ -907,6 +924,9 @@ void BuildingObjectImplementation::onExit(CreatureObject* player, uint64 parenti
 	unregisterProfessional(player);
 
 	notifyObservers(ObserverEventType::EXITEDBUILDING, player, parentid);
+
+	if (removeFromContainedPlayerList)
+		containedPlayers.drop(player);
 }
 
 uint32 BuildingObjectImplementation::getMaximumNumberOfPlayerItems() {
@@ -924,6 +944,17 @@ uint32 BuildingObjectImplementation::getMaximumNumberOfPlayerItems() {
 	//Buildings that don't cost lots have MAXPLAYERITEMS storage space.
 	if (lots == 0)
 		return MAXPLAYERITEMS;
+
+	if (ConfigManager::instance()->getIncreasedStorageEnabled()) {
+		if (lots == 2)
+			return ConfigManager::instance()->getTwoLots();
+		if (lots == 3)
+			return ConfigManager::instance()->getThreeLots();
+		if (lots == 4)
+			return ConfigManager::instance()->getFourLots();
+		if (lots == 5)
+			return ConfigManager::instance()->getFiveLots();
+	}
 
 	auto maxItems = MAXPLAYERITEMS;
 
@@ -1707,6 +1738,16 @@ void BuildingObjectImplementation::changeSign(const SignTemplate* signConfig) {
 
 		oldSign->destroyObjectFromWorld(true);
 		oldSign->destroyObjectFromDatabase(true);
+	} else {
+		BuildingObject* building = asBuildingObject();
+		CreatureObject* owner = getOwnerCreatureObject();
+
+		if (building != nullptr && owner != nullptr) {
+			if (!building->isCivicStructure() && !building->isCommercialStructure()) {
+				building->setCustomObjectName(owner->getFirstName() + "'s House", true);
+				signName = building->getCustomObjectName();
+			}
+		}
 	}
 
 	Locker clocker2(signObject, asBuildingObject());
@@ -1715,7 +1756,7 @@ void BuildingObjectImplementation::changeSign(const SignTemplate* signConfig) {
 	signObject->initializeChildObject(asBuildingObject());  // should call BuildingObject::setSignObject
 
 	// Set to old sign name
-	setCustomObjectName( signName, true );
+	setCustomObjectName(signName, true);
 }
 
 bool BuildingObjectImplementation::togglePrivacy() {
@@ -1846,4 +1887,133 @@ String BuildingObjectImplementation::getCellName(uint64 cellID) const {
 		return "";
 
 	return cellProperty->getName();
+}
+
+String BuildingObjectImplementation::getPackupMessage() const {
+	if (!ConfigManager::instance()->getStructurePackupEnabled())
+		return "packup_not_eligible_01";
+
+	if (isCivicStructure() || isGCWBase())
+		return "packup_not_eligible_02";
+
+	if (getCurrentNumberOfPlayerItems() <= 0)
+		return "packup_not_eligible_03";
+
+	if (!ConfigManager::instance()->getVendorPackupEnabled() && getCurrentNumberOfPlayerVendors() > 0)
+		return "packup_not_eligible_04";
+
+	return "";
+}
+
+bool BuildingObjectImplementation::unloadFromZone(bool sendSelfDestroy) {
+	ManagedReference<Zone*> zone = getZone();
+
+	if (zone == nullptr)
+		return false;
+
+	ManagedReference<SceneObject*> owner = zone->getZoneServer()->getObject(getOwnerObjectID());
+
+	if (owner == nullptr)
+		return false;
+
+	ManagedReference<SceneObject*> ghost = owner->getSlottedObject("ghost");
+
+	if (ghost == nullptr || !ghost->isPlayerObject())
+		return false;
+
+	if (navArea != nullptr) {
+		ManagedReference<NavArea*> nav = navArea;
+		Core::getTaskManager()->executeTask([nav, sendSelfDestroy] () {
+			Locker locker(nav);
+			nav->destroyObjectFromWorld(sendSelfDestroy);
+		}, "destroyStructureNavAreaLambda2");
+	}
+
+	PlayerObject* playerObject = cast<PlayerObject*>(ghost.get());
+
+	if (getObjectID() == playerObject->getDeclaredResidence())
+		playerObject->setDeclaredResidence(nullptr);
+
+	uint64 waypointID = getWaypointID();
+
+	if (waypointID != 0)
+		playerObject->removeWaypoint(waypointID, true, true);
+
+	float x = getPositionX();
+	float y = getPositionY();
+	float z = zone->getHeight(x, y);
+
+	destroyChildObjects();
+
+	for (uint32 i = 1; i <= getTotalCellNumber(); ++i) {
+		ManagedReference<CellObject*> cellObject = getCell(i);
+
+		if (cellObject == nullptr)
+			continue;
+
+		int childObjects = cellObject->getContainerObjectsSize();
+
+		if (childObjects <= 0)
+			continue;
+
+		for (int j = childObjects - 1; j >= 0; --j) {
+			ManagedReference<SceneObject*> containedObject = cellObject->getContainerObject(j);
+
+			if (containedObject->isVendor()) {
+				TangibleObject* vendor = cast<TangibleObject*>(containedObject.get());
+
+				if (vendor != nullptr) {
+					DataObjectComponentReference* data = vendor->getDataObjectComponent();
+
+					if (data == nullptr || data->get() == nullptr || !data->get()->isVendorData())
+						continue;
+
+					VendorDataComponent* vendorData = cast<VendorDataComponent*>(data->get());
+
+					if (vendorData == nullptr)
+						continue;
+
+					ManagedReference<CreatureObject*> owner = zone->getZoneServer()->getObject(vendorData->getOwnerId()).castTo<CreatureObject*>();
+
+					if (owner == nullptr)
+						continue;
+
+					Locker clocker(vendor, owner);
+					VendorManager::instance()->handlePackupVendor(owner, vendor, true);
+				}
+			}
+
+			if (containedObject->isPlayerCreature() || containedObject->isPet()) {
+				CreatureObject* playerCreature = cast<CreatureObject*>(containedObject.get());
+				playerCreature->teleport(x, z, y, 0);
+				onExit(playerCreature, 0, true);
+			}
+		}
+	}
+
+	int playerCount = containedPlayers.size();
+
+	for (int i = playerCount - 1; i >= 0; --i) {
+		ManagedReference<CreatureObject*> playerCreature = containedPlayers.get(i);
+
+		if (playerCreature == nullptr)
+			continue;
+
+		PlayerObject* ghost = playerCreature->getPlayerObject();
+
+		if (ghost == nullptr)
+			continue;
+
+		playerCreature->setPosition(x, z, y);
+		playerCreature->updateZone(false, false);
+		ghost->setSavedParentID(0);
+		onExit(playerCreature, 0, true);
+	}
+
+	containedPlayers.removeAll();
+	removeObjectFromZone(zone, asSceneObject());
+	setZone(nullptr);
+	scheduleMaintenanceExpirationEvent();
+
+	return true;
 }

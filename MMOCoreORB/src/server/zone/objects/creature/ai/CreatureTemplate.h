@@ -68,6 +68,7 @@ protected:
 	float scale;
 
 	int baseXp;
+	int frsXp;
 	int baseHAM;
 	int baseHAMmax;
 
@@ -302,6 +303,10 @@ public:
 
 	inline int getBaseXp() const {
 		return baseXp;
+	}
+
+	inline int getFrsXp() const {
+		return frsXp;
 	}
 
 	inline int getBaseHAM() const {

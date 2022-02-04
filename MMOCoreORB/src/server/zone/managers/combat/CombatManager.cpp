@@ -31,7 +31,9 @@
 #include "server/zone/managers/frs/FrsManager.h"
 #include "server/zone/objects/intangible/PetControlDevice.h"
 
-#define COMBAT_SPAM_RANGE 85 // Range at which players will see Combat Log Info
+#include "server/zone/objects/group/GroupObject.h"
+
+#define COMBAT_SPAM_RANGE 85
 
 /*
 * Notes:
@@ -91,19 +93,25 @@ bool CombatManager::startCombat(CreatureObject* attacker, TangibleObject* defend
 	if (attacker->isPlayerCreature() && !attacker->hasDefender(defender)) {
 		ManagedReference<WeaponObject*> weapon = attacker->getWeapon();
 
-		if (weapon != nullptr && weapon->isJediWeapon()) {
-			VisibilityManager::instance()->increaseVisibility(attacker, 25);
-		}
+		if (weapon != nullptr && weapon->isJediWeapon())
+			VisibilityManager::instance()->increaseVisibility(attacker, 50);
 	}
 
 	Locker clocker(defender, attacker);
 
 	if (creo != nullptr && creo->isPlayerCreature() && !creo->hasDefender(attacker)) {
+		// don't increase visibility if the defender is on a speeder
+		bool isDriving = false;
+		if (creo->isRidingMount()){
+			ManagedReference<CreatureObject*> parent = attacker->getParent().get().castTo<CreatureObject*>();
+			if (parent != nullptr)
+				isDriving = parent->isVehicleObject();
+		}
+
 		ManagedReference<WeaponObject*> weapon = creo->getWeapon();
 
-		if (weapon != nullptr && weapon->isJediWeapon()) {
-			VisibilityManager::instance()->increaseVisibility(creo, 25);
-		}
+		if (weapon != nullptr && weapon->isJediWeapon() && !isDriving)
+			VisibilityManager::instance()->increaseVisibility(creo, 50);
 	}
 
 	attacker->setCombatState();
@@ -273,6 +281,8 @@ int CombatManager::doCombatAction(CreatureObject* attacker, WeaponObject* weapon
 	// Update PvP TEF Duration
 	if (shouldGcwCrackdownTef || shouldGcwTef || shouldBhTef) {
 		ManagedReference<CreatureObject*> attackingCreature = nullptr;
+		ManagedReference<CreatureObject*> defender = nullptr;
+		ManagedReference<CreatureObject*> defendingCreature = nullptr;
 
 		if (attacker->isPet()) {
 			ManagedReference<PetControlDevice*> controlDevice = attacker->getControlDevice().get().castTo<PetControlDevice*>();
@@ -290,12 +300,39 @@ int CombatManager::doCombatAction(CreatureObject* attacker, WeaponObject* weapon
 			attackingCreature = attacker;
 		}
 
-		if (attackingCreature != nullptr) {
-			PlayerObject* ghost = attackingCreature->getPlayerObject();
+		if (defenderObject->isCreatureObject()) {
+			defender = defenderObject->asCreatureObject();
 
-			if (ghost != nullptr) {
+			if (defender != nullptr) {
+				if (defender->isPet()) {
+					ManagedReference<PetControlDevice*> controlDevice = defender->getControlDevice().get().castTo<PetControlDevice*>();
+
+					if (controlDevice != nullptr) {
+						ManagedReference<SceneObject*> lastCommander = controlDevice->getLastCommander().get();
+
+						if (lastCommander != nullptr && lastCommander->isCreatureObject()) {
+							defendingCreature = lastCommander->asCreatureObject();
+						} else {
+							defendingCreature = defender->getLinkedCreature();
+						}
+					}
+				} else {
+					defendingCreature = defender;
+				}
+			}
+		}
+
+		if (attackingCreature != nullptr && defendingCreature != nullptr) {
+			PlayerObject* attackingGhost = attackingCreature->getPlayerObject();
+			PlayerObject* defendingGhost = defendingCreature->getPlayerObject();
+
+			if (attackingGhost != nullptr) {
 				Locker olocker(attackingCreature, attacker);
-				ghost->updateLastCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
+				attackingGhost->updateLastPvpCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
+			}
+
+			if (defendingGhost != nullptr && ConfigManager::instance()->getTefEnabled() && (shouldBhTef)) {
+				defendingGhost->updateLastPvpCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
 			}
 		}
 	}
@@ -2220,7 +2257,6 @@ int CombatManager::getArmorVehicleReduction(VehicleObject* defender, int damageT
 }
 
 // Armor mitigation
-
 int CombatManager::getArmorReduction(TangibleObject* attacker, WeaponObject* weapon, CreatureObject* defender, DefenderHitList* hitList, float damage, int hitLocation, const CreatureAttackData& data) const {
 	int damageType = 0, armorPiercing = 1;
 
@@ -2297,7 +2333,7 @@ int CombatManager::getArmorReduction(TangibleObject* attacker, WeaponObject* wea
 			int forceDefense = defender->getSkillMod("force_defense");
 
 			if (forceDefense > 0)
-				feedbackDmg *= 1.f / (1.f + ((float)forceDefense / 100.f));
+				feedbackDmg *= 1.f / (1.f + ((float)forceDefense / 550.f));
 
 			float splitDmg = feedbackDmg / 3;
 
@@ -2311,7 +2347,7 @@ int CombatManager::getArmorReduction(TangibleObject* attacker, WeaponObject* wea
 
 		// Force Absorb
 		if (defender->getSkillMod("force_absorb") > 0 && defender->isPlayerCreature()) {
-			float absorbDam = damage * 0.4f;
+			float absorbDam = damage * 0.5f;
 
 			defender->notifyObservers(ObserverEventType::FORCEABSORB, attacker, absorbDam);
 			hitList->setForceAbsorb(absorbDam);
@@ -2370,6 +2406,12 @@ int CombatManager::getArmorReduction(TangibleObject* attacker, WeaponObject* wea
 
 		armor->inflictDamage(armor, 0, damage * 0.2, true, true);
 	}
+
+	//UnequipBrokenWearables
+	PlayerObject* defenderGhost = defender->getPlayerObject();
+
+	if (defenderGhost != nullptr)
+		defenderGhost->unequipBrokenWearables();
 
 	return damage;
 }
@@ -3108,7 +3150,6 @@ bool CombatManager::areInDuel(CreatureObject* player1, CreatureObject* player2) 
 }
 
 // Check for Temporary Enemy Flags
-
 void CombatManager::checkForTefs(CreatureObject* attacker, CreatureObject* defender, bool* shouldGcwCrackdownTef, bool* shouldGcwTef, bool* shouldBhTef) const {
 	if (*shouldGcwCrackdownTef && *shouldGcwTef && *shouldBhTef) {
 		return;
@@ -3134,16 +3175,26 @@ void CombatManager::checkForTefs(CreatureObject* attacker, CreatureObject* defen
 	}
 
 	if (attackingCreature != nullptr && targetCreature != nullptr) {
-		if (attackingCreature->isPlayerCreature() && targetCreature->isPlayerCreature() && !areInDuel(attackingCreature, targetCreature)) {
-			if (!(*shouldGcwTef)) {
-				if (attackingCreature->getFaction() != targetCreature->getFaction() && attackingCreature->getFactionStatus() == FactionStatus::OVERT && targetCreature->getFactionStatus() == FactionStatus::OVERT) {
-					*shouldGcwTef = true;
-				}
-			}
+		if (attackingCreature->isPlayerCreature() && !areInDuel(attackingCreature, targetCreature)) {
 
-			if (!(*shouldBhTef)) {
-				if (attackingCreature->hasBountyMissionFor(targetCreature) || targetCreature->hasBountyMissionFor(attackingCreature)) {
+			if (ConfigManager::instance()->getTefEnabled()) {
+				if (!(*shouldBhTef) && (attackingCreature->hasBountyMissionFor(targetCreature) || targetCreature->hasBountyMissionFor(attackingCreature)))
 					*shouldBhTef = true;
+
+				if (!*shouldBhTef) {
+					if (!(*shouldGcwTef) && attackingCreature->getFaction() != targetCreature->getFaction() && attackingCreature->getFaction() != 0 && targetCreature->getFaction() != 0)
+						*shouldGcwTef = true;
+				}
+
+			} else {
+				if (!(*shouldGcwTef)) {
+					if (attackingCreature->getFaction() != targetCreature->getFaction() && attackingCreature->getFactionStatus() == FactionStatus::OVERT && targetCreature->getFactionStatus() == FactionStatus::OVERT)
+						*shouldGcwTef = true;
+				}
+
+				if (!(*shouldBhTef)) {
+					if (attackingCreature->hasBountyMissionFor(targetCreature) || targetCreature->hasBountyMissionFor(attackingCreature))
+						*shouldBhTef = true;
 				}
 			}
 		}
@@ -3152,16 +3203,15 @@ void CombatManager::checkForTefs(CreatureObject* attacker, CreatureObject* defen
 			if (attackingCreature->isPlayerObject() && targetCreature->isAiAgent()) {
 				Reference<PlayerObject*> ghost = attackingCreature->getPlayerObject();
 
-				if (ghost->hasCrackdownTefTowards(targetCreature->getFaction())) {
+				if (ghost->hasCrackdownTefTowards(targetCreature->getFaction()))
 					*shouldGcwCrackdownTef = true;
-				}
 			}
+
 			if (targetCreature->isPlayerObject() && attackingCreature->isAiAgent()) {
 				Reference<PlayerObject*> ghost = targetCreature->getPlayerObject();
 
-				if (ghost->hasCrackdownTefTowards(attackingCreature->getFaction())) {
+				if (ghost->hasCrackdownTefTowards(attackingCreature->getFaction()))
 					*shouldGcwCrackdownTef = true;
-				}
 			}
 		}
 	}

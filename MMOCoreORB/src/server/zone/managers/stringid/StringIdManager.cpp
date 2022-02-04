@@ -12,6 +12,8 @@
 #include "templates/manager/DataArchiveStore.h"
 #include "tre3/TreeArchive.h"
 
+#include "conf/ConfigManager.h"
+
 void StringIdManager::populateDatabase() {
 	int count = 0;
 
@@ -89,7 +91,7 @@ StringIdManager::StringIdManager() : Logger("StringIdManager") {
 
 	stringsDatabase = databaseManager->loadLocalDatabase("strings", true);
 
-	if (fill || ServerCore::truncateDatabases() || ServerCore::hasArgument("reloadstrings"))
+	if (fill || ServerCore::truncateDatabases() || ServerCore::hasArgument("reloadstrings") || ConfigManager::instance()->getReloadStringsDb())
 		populateDatabase();
 
 	ObjectDatabaseManager::instance()->commitLocalTransaction();

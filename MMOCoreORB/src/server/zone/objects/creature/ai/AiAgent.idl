@@ -1047,6 +1047,13 @@ class AiAgent extends CreatureObject {
 	}
 
 	@dirty
+	public abstract int getFrsXp() {
+		if (npcTemplate.get() == null || isEventMob())
+			return 0;
+		return npcTemplate.get().getFrsXp();
+	}
+
+	@dirty
 	public unsigned int getDiet() {
 		if (npcTemplate.get() == null)
 			return 0;

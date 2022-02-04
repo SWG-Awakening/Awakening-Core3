@@ -261,7 +261,11 @@ void EntertainingSessionImplementation::doPerformanceAction() {
 		return;
 	}
 
+	/* SWGEmu Default
 	int actionDrain = entertainer->calculateCostAdjustment(CreatureAttribute::QUICKNESS, performance->getActionPointsPerLoop());
+	*/
+	int actionDrain = performance->getActionPointsPerLoop() - (int)(entertainer->getHAM(CreatureAttribute::QUICKNESS)/35.f);
+	actionDrain = entertainer->calculateCostAdjustment(CreatureAttribute::QUICKNESS, actionDrain);
 
 	if (entertainer->getHAM(CreatureAttribute::ACTION) <= actionDrain) {
 		if (isDancing()) {
@@ -434,10 +438,12 @@ void EntertainingSessionImplementation::doPerformEffect(int effectId, int effect
 
 	PerformanceManager* performanceManager = SkillManager::instance()->getPerformanceManager();
 
+	/* Disable Effect Delay
 	if (isPerformingEffect()) {
 		performanceManager->performanceMessageToSelf(entertainer, nullptr, "performance", "effect_wait_self"); // You must wait before you can perform another special effect.
 		return;
 	}
+	*/
 
 	PerformEffect* effect = performanceManager->getPerformEffect(effectId, effectLevel);
 
@@ -638,15 +644,16 @@ void EntertainingSessionImplementation::doFlourish(int flourishNumber, bool gran
 
 	ManagedReference<Instrument*> instrument = entertainer->getPlayableInstrument();
 
-	float baseActionDrain = performance->getActionPointsPerLoop() - (int)(entertainer->getHAM(CreatureAttribute::QUICKNESS)/35.f);
+	float baseActionDrain = performance->getActionPointsPerLoop() - (int)(entertainer->getHAM(CreatureAttribute::QUICKNESS)/35.f);//SWGEmu Default
 
 	if (baseActionDrain < 0)
 		baseActionDrain = 0;
 
 	//float baseActionDrain = -40 + (getQuickness() / 37.5);
-	float flourishActionDrain = baseActionDrain / 2.0;
+	float flourishActionDrain = baseActionDrain / 5.0;
 
 	int actionDrain = (int)round((flourishActionDrain * 10 + 0.5) / 10.0); // Round to nearest dec for actual int cost
+	actionDrain = entertainer->calculateCostAdjustment(CreatureAttribute::QUICKNESS, actionDrain);
 
 	if (entertainer->getHAM(CreatureAttribute::ACTION) <= actionDrain) {
 		entertainer->sendSystemMessage("@performance:flourish_too_tired");
@@ -687,9 +694,13 @@ void EntertainingSessionImplementation::addEntertainerBuffDuration(CreatureObjec
 
 	buffDuration += duration;
 
-	if (buffDuration > (120.0f + (10.0f / 60.0f)) ) // 2 hrs 10 seconds
-		buffDuration = (120.0f + (10.0f / 60.0f)); // 2hrs 10 seconds
-
+	if (creature->getSkillMod("private_spec_entertainer") > 0) {
+		if (buffDuration > (180.0f + (10.0f / 60.0f)))
+			buffDuration = (180.0f + (10.0f / 60.0f));
+	} else {
+		if (buffDuration > (140.0f + (10.0f / 60.0f)) ) // 2 hrs 10 seconds
+			buffDuration = (140.0f + (10.0f / 60.0f)); // 2 hrs 10 seconds
+	}
 	setEntertainerBuffDuration(creature, performanceType, buffDuration);
 }
 

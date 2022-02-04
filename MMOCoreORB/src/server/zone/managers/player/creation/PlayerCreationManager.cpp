@@ -27,6 +27,7 @@
 #include "server/zone/managers/jedi/JediManager.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 
+
 PlayerCreationManager::PlayerCreationManager() :
 		Logger("PlayerCreationManager") {
 	setLogging(false);
@@ -268,7 +269,10 @@ void PlayerCreationManager::loadLuaConfig() {
 	Lua* lua = new Lua();
 	lua->init();
 
-	lua->runFile("scripts/managers/player_creation_manager.lua");
+	bool res = lua->runFile("custom_scripts/managers/player_creation_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/player_creation_manager.lua");
 
 	startingCash = lua->getGlobalInt("startingCash");
 	startingBank = lua->getGlobalInt("startingBank");
@@ -334,8 +338,8 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
 
 	auto client = callback->getClient();
 
-	if (client->getCharacterCount(zoneServer.get()->getGalaxyID()) >= 10) {
-		ErrorMessage* errMsg = new ErrorMessage("Create Error", "You are limited to 10 characters per galaxy.", 0x0);
+	if (client->getCharacterCount(zoneServer.get()->getGalaxyID()) >= ConfigManager::instance()->getCharactersPerGalaxy()) {
+		ErrorMessage* errMsg = new ErrorMessage("Create Error", ConfigManager::instance()->getCharactersPerGalaxyError(), 0x0);
 		client->sendMessage(errMsg);
 
 		return false;
@@ -489,8 +493,8 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
 
 							Time timeVal(sec);
 
-							if (timeVal.miliDifference() < 3600000) {
-								ErrorMessage* errMsg = new ErrorMessage("Create Error", "You are only permitted to create one character per hour. Repeat attempts prior to 1 hour elapsing will reset the timer.", 0x0);
+							if (timeVal.miliDifference() < ConfigManager::instance()->getCreateTime()) {
+								ErrorMessage* errMsg = new ErrorMessage("Creation Error", ConfigManager::instance()->getCreateTimeError(), 0x0);
 								client->sendMessage(errMsg);
 
 								playerCreature->destroyPlayerCreatureFromDatabase(true);
@@ -506,8 +510,8 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
 					if (lastCreatedCharacter.containsKey(accID)) {
 						Time lastCreatedTime = lastCreatedCharacter.get(accID);
 
-						if (lastCreatedTime.miliDifference() < 3600000) {
-							ErrorMessage* errMsg = new ErrorMessage("Create Error", "You are only permitted to create one character per hour. Repeat attempts prior to 1 hour elapsing will reset the timer.", 0x0);
+						if (lastCreatedTime.miliDifference() < ConfigManager::instance()->getCreateTime()) {
+							ErrorMessage* errMsg = new ErrorMessage("Creation Error", ConfigManager::instance()->getCreateTimeError(), 0x0);
 							client->sendMessage(errMsg);
 
 							playerCreature->destroyPlayerCreatureFromDatabase(true);
@@ -565,8 +569,62 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
 				<< raceFile.escapeString() << "')";
 
 		ServerDatabase::instance()->executeStatement(query);
+
 	} catch (const DatabaseException& e) {
 		error(e.getMessage());
+	}
+
+	//Generate Jedi Unlock Params
+	if (ConfigManager::instance()->getCustomUnlockEnabled()) {
+		String column1 = ConfigManager::instance()->getJediColumn1();
+		String column2 = ConfigManager::instance()->getJediColumn2();
+		String column3 = ConfigManager::instance()->getJediColumn3();
+		String column4 = ConfigManager::instance()->getJediColumn4();
+		String column5 = ConfigManager::instance()->getJediColumn5();
+		String column6 = ConfigManager::instance()->getJediColumn6();
+		String column7 = ConfigManager::instance()->getJediColumn7();
+		String column8 = ConfigManager::instance()->getJediColumn8();
+		String column9 = ConfigManager::instance()->getJediColumn9();
+		String column10 = ConfigManager::instance()->getJediColumn10();
+		String column11 = ConfigManager::instance()->getJediColumn11();
+		String column12 = ConfigManager::instance()->getJediColumn12();
+		int rand1 = ConfigManager::instance()->getRandJedi1();
+		int rand2 = ConfigManager::instance()->getRandJedi2();
+		int rand3 = ConfigManager::instance()->getRandJedi3();
+		int rand4 = ConfigManager::instance()->getRandJedi4();
+		int rand5 = ConfigManager::instance()->getRandJedi5();
+		int rand6 = ConfigManager::instance()->getRandJedi6();
+		int rand7 = ConfigManager::instance()->getRandJedi7();
+		int rand8 = ConfigManager::instance()->getRandJedi8();
+		int rand9 = ConfigManager::instance()->getRandJedi9();
+		int param1 = (System::random(rand2-rand1) + rand1);
+		int param2 = (System::random(rand3-rand1) + rand1);
+		int param3 = (System::random(rand7-rand5) + rand5);
+		int param4 = (System::random(rand6-rand4) + rand4);
+		int param5 = (System::random(rand3-rand1) + rand1);
+		int param6 = (System::random(rand9-rand8) + rand8);
+		int param7 = (System::random(rand3-rand1) + rand1);
+		int param8 = (System::random(rand6-rand4) + rand4);
+		int param9 = (System::random(rand9-rand8) + rand8);
+		int param10 = (System::random(rand7-rand5) + rand5);
+		int param11 = (System::random(rand3-rand1) + rand1);
+		int param12 = (System::random(rand2-rand1) + rand1);
+
+		try {
+			StringBuffer jediQuery;
+			jediQuery
+				<< "INSERT INTO `jedi_unlock` (`character_oid`, `firstname`, `surname`,`" << column1.escapeString() << "`,`" << column2.escapeString() << "`,`" << column3.escapeString() << "`,`"
+				<< column4.escapeString() << "`,`" << column5.escapeString() << "`,`" << column6.escapeString() << "`,`" << column7.escapeString() << "`,`" << column8.escapeString() << "`,`"
+				<< column9.escapeString() << "`,`" << column10.escapeString() << "`,`" << column11.escapeString() << "`,`" << column12.escapeString() << "`)"
+				<< " VALUES (" << playerCreature->getObjectID() << "," << "'" << firstName.escapeString() << "','" << lastName.escapeString() << "','"
+				<< param1 << "','" << param2 << "','" << param3 << "','" << param4 << "','" << param5 << "','" << param6 << "','"
+				<< param7 << "','" << param8 << "','" << param9 << "','" << param10 << "','" << param11 << "','" << param12 << "')";
+
+			ServerDatabase::instance()->executeStatement(jediQuery);
+
+		} catch (const DatabaseException& e) {
+			error(e.getMessage());
+		}
 	}
 
 	playerManager->addPlayer(playerCreature);
@@ -580,9 +638,19 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
 	//Join auction chat room
 	ghost->addChatRoom(chatManager->getAuctionRoom()->getRoomID());
 
+	//Join general chat room
+	if (ConfigManager::instance()->getGeneralChatEnabled()) {
+		ghost->addChatRoom(chatManager->getGeneralRoom()->getRoomID());
+	}
+
+	//Join pvp chat room
+	if (ConfigManager::instance()->getCustomRoomsEnabled()) {
+		ghost->addChatRoom(chatManager->getPvpRoom()->getRoomID());
+	}
+
 	ManagedReference<SuiMessageBox*> box = new SuiMessageBox(playerCreature, SuiWindowType::NONE);
-	box->setPromptTitle("PLEASE NOTE");
-	box->setPromptText("You are limited to creating one character per hour. Attempting to create another character or deleting your character before the 1 hour timer expires will reset the timer.");
+	box->setPromptTitle(ConfigManager::instance()->getCreateSuiTitle());
+	box->setPromptText(ConfigManager::instance()->getCreateSuiMessage());
 
 	ghost->addSuiBox(box);
 	playerCreature->sendMessage(box->generateMessage());

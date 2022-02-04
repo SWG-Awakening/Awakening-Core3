@@ -26,6 +26,7 @@
 #include "server/zone/managers/stringid/StringIdManager.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 
+
 void StructureObjectImplementation::loadTemplateData(SharedObjectTemplate* templateData) {
 	TangibleObjectImplementation::loadTemplateData(templateData);
 
@@ -147,6 +148,13 @@ void StructureObjectImplementation::notifyLoadFromDatabase() {
 		Reference<MigratePermissionsTask*> task = new MigratePermissionsTask(_this.getReferenceUnsafeStaticCast());
 
 		task->execute();
+	}
+
+	if (!staticObject && getBaseMaintenanceRate() != 0 && !isTurret() && !isMinefield()) {
+		//Decay is 4 weeks.
+		maxCondition = getBaseMaintenanceRate() * 24 * 7 * 4;
+
+		scheduleMaintenanceExpirationEvent();
 	}
 }
 

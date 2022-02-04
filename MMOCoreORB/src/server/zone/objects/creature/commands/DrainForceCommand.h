@@ -90,7 +90,7 @@ public:
 			manager->broadcastCombatSpam(creature, targetCreature, nullptr, forceDrain, "cbt_spam", combatSpam, 1);
 
 			if (targetCreature->getSkillMod("force_absorb") > 0) {
-				float drainAbsorb = forceDrain * 0.4f;
+				float drainAbsorb = forceDrain * 0.5f;
 				targetCreature->notifyObservers(ObserverEventType::FORCEABSORB, targetCreature, drainAbsorb);
 				manager->sendMitigationCombatSpam(targetCreature, nullptr, drainAbsorb, 0x04); // FORCEABSORB
 			}

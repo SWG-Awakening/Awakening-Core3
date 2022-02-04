@@ -90,6 +90,13 @@ void LoginPacketHandler::handleDeleteCharacterMessage(LoginClient* client, Messa
 	deleteStatement << "DELETE FROM characters WHERE character_oid = " << charId;
 	deleteStatement << " AND account_id = " << accountId << " AND galaxy_id = " << ServerId << ";";
 
+    StringBuffer deleteJediStatement;
+    deleteJediStatement << "DELETE FROM jedi_unlock WHERE character_oid = " << charId << ";";
+
+    StringBuffer deleteStatsStatement;
+    deleteStatsStatement << "DELETE FROM character_stats WHERE character_oid = " << charId;
+    deleteStatsStatement << " AND galaxy_id = " << ServerId << ";";
+
 	int dbDelete = 0;
 
 	try {
@@ -121,13 +128,28 @@ void LoginPacketHandler::handleDeleteCharacterMessage(LoginClient* client, Messa
 	if (!dbDelete) {
 		try {
 			UniqueReference<ResultSet*> deleteResults(ServerDatabase::instance()->executeQuery(deleteStatement));
-
 			if (deleteResults == nullptr || deleteResults.get()->getRowsAffected() == 0) {
 				error() << "Unable to delete character from character table. " << endl
 					<< "QUERY: " << deleteStatement;
 
 				dbDelete = 1;
 			}
+
+    		if (ConfigManager::instance()->getCustomUnlockEnabled() && dbDelete == 1) {
+    			UniqueReference<ResultSet*> deleteJediResults(ServerDatabase::instance()->executeQuery(deleteJediStatement));
+    			if (deleteJediResults == nullptr || deleteJediResults.get()->getRowsAffected() == 0) {
+        			StringBuffer errMsg;
+        			errMsg << "ERROR: Unable to delete character data from the jedi_unlock table. It does not exist. " << endl;
+        			errMsg << "QUERY: " << deleteJediStatement.toString();
+        		}
+    		}
+
+			UniqueReference<ResultSet*> deleteStatsResults(ServerDatabase::instance()->executeQuery(deleteStatsStatement));
+			if (deleteStatsResults == nullptr || deleteStatsResults.get()->getRowsAffected() == 0) {
+				error() << "Unable to delete character stats from character stat table. " << endl
+					<< "QUERY: " << deleteStatsStatement;
+			}
+
 		} catch (const Exception& e) {
 			error() << e.getMessage();
 			dbDelete = 1;
@@ -137,5 +159,3 @@ void LoginPacketHandler::handleDeleteCharacterMessage(LoginClient* client, Messa
 	auto* msg = new DeleteCharacterReplyMessage(dbDelete);
 	client->sendMessage(msg);
 }
-
-

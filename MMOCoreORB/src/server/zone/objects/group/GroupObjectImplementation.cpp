@@ -415,7 +415,6 @@ void GroupObjectImplementation::calcGroupLevel() {
 
 		if (member->isPet()) {
 			groupLevel += member->getLevel() / 5;
-
 		} else if (member->isPlayerCreature()) {
 			int memberLevel = member->getLevel();
 

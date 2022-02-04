@@ -31,6 +31,7 @@ class GroupObject extends SceneObject {
 
 	unsigned long masterLooterID;
 
+
 	public GroupObject() {
 		groupLevel = 0;
 

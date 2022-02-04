@@ -23,7 +23,10 @@ void PetManagerImplementation::loadLuaConfig() {
 	Lua* lua = new Lua();
 	lua->init();
 
-	lua->runFile("scripts/managers/pet_manager.lua");
+	bool res = lua->runFile("custom_scripts/managers/pet_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/pet_manager.lua");
 
 	LuaObject luaObject = lua->getGlobalObject("mountSpeedData");
 

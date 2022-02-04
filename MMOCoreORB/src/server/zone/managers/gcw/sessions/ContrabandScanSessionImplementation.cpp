@@ -23,6 +23,7 @@
 #include "server/zone/objects/player/FactionStatus.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 
+
 int ContrabandScanSessionImplementation::initializeSession() {
 	ManagedReference<AiAgent*> scanner = weakScanner.get();
 	ManagedReference<CreatureObject*> player = weakPlayer.get();
@@ -424,7 +425,14 @@ void ContrabandScanSessionImplementation::checkPlayerFactionRank(Zone* zone, AiA
 			scanState = FINISHED;
 		}
 	} else if (player->getFaction() != Factions::FACTIONNEUTRAL) {
-		if (player->getFactionStatus() == FactionStatus::OVERT || (System::random(100) < detectionChance && !smugglerAvoidedScan)) {
+		PlayerObject* ghost = player->getPlayerObject();
+
+		if (ghost == nullptr) {
+			error("Error: Ghost is null in ContrabandScanSessionImplementation::checkPlayerFactionRank");
+		}
+
+		if (player->getFactionStatus() == FactionStatus::OVERT || (ConfigManager::instance()->getTefEnabled() && ghost->hasGcwTef())
+				|| (System::random(100) < detectionChance && !smugglerAvoidedScan)) {
 			if (player->getFactionRank() < RECOGNIZEDFACTIONRANK) {
 				sendScannerChatMessage(zone, scanner, player, "discovered_chat_imperial", "discovered_chat_rebel");
 			} else {
@@ -433,9 +441,10 @@ void ContrabandScanSessionImplementation::checkPlayerFactionRank(Zone* zone, AiA
 			sendSystemMessage(scanner, player, "discovered_imperial", "discovered_rebel");
 			scanner->doAnimation("point_accusingly");
 
-			if (player->getFactionStatus() != FactionStatus::OVERT) {
+			if (ConfigManager::instance()->getTefEnabled())
+					ghost->updateLastPvpCombatActionTimestamp(true, false, false);
+			else
 				player->setFactionStatus(FactionStatus::COVERT);
-			}
 
 			String landingMessage = getFactionStringId("containment_team_imperial", "containment_team_rebel");
 			callInLambdaShuttle(scanner, player, currentWinningFactionDifficultyScaling, landingMessage);

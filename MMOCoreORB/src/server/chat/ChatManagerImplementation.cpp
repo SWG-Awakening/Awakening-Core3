@@ -49,6 +49,9 @@
 #include "server/chat/room/ChatRoomMap.h"
 #include "templates/string/StringFile.h"
 
+#include "server/zone/managers/log/AwakeningLogManager.h"
+#include "server/zone/managers/log/LogType.h"
+
 ChatManagerImplementation::ChatManagerImplementation(ZoneServer* serv, int initsize) : ManagedServiceImplementation() {
 	server = serv;
 	playerManager = nullptr;
@@ -75,6 +78,10 @@ void ChatManagerImplementation::stop() {
 	groupRoom = nullptr;
 	guildRoom = nullptr;
 	auctionRoom = nullptr;
+	generalRoom = nullptr;
+	pvpRoom = nullptr;
+	imperialRoom = nullptr;
+	rebelRoom = nullptr;
 	gameRooms.removeAll();
 }
 
@@ -306,15 +313,39 @@ void ChatManagerImplementation::initiateRooms() {
 	guildRoom = createRoom("guild", systemRoom);
 	guildRoom->setPrivate();
 
-	Reference<ChatRoom*> generalRoom = createRoom("Chat", galaxyRoom);
-	generalRoom->setCanEnter(true);
-	generalRoom->setAllowSubrooms(true);
-	generalRoom->setTitle("public chat for this server, can create rooms here");
-
 	auctionRoom = createRoom("Auction", galaxyRoom);
 	auctionRoom->setCanEnter(true);
 	auctionRoom->setChatRoomType(ChatRoom::AUCTION);
 
+	if (ConfigManager::instance()->getGeneralChatEnabled()) {
+		generalRoom = createRoom("General", galaxyRoom);
+		generalRoom->setCanEnter(true);
+		generalRoom->setAllowSubrooms(true);
+		generalRoom->setTitle("Public chat for the Awakening Galaxy. Chat rooms can be created here.");
+	} else {
+		generalRoom = createRoom("Chat", galaxyRoom);
+		generalRoom->setCanEnter(true);
+		generalRoom->setAllowSubrooms(true);
+		generalRoom->setTitle("public chat for this server, can create rooms here");
+	}
+
+	if (ConfigManager::instance()->getCustomRoomsEnabled()) {
+		pvpRoom = createRoom("PvP Chat", galaxyRoom);
+		pvpRoom->setFullPath(pvpRoom->getFullPath().replaceFirst("PvP Chat", "PvP"));
+		pvpRoom->setCanEnter(true);
+		pvpRoom->setAllowSubrooms(false);
+		pvpRoom->setTitle("Keep the smack talk in here.");
+
+		imperialRoom = createRoom("Imperial Chat", galaxyRoom);
+		imperialRoom->setCanEnter(true);
+		imperialRoom->setAllowSubrooms(false);
+		imperialRoom->setChatRoomType(ChatRoom::IMPERIAL);
+
+		rebelRoom = createRoom("Rebel Chat", galaxyRoom);
+		rebelRoom->setCanEnter(true);
+		rebelRoom->setAllowSubrooms(false);
+		rebelRoom->setChatRoomType(ChatRoom::REBEL);
+	}
 }
 
 void ChatManagerImplementation::initiatePlanetRooms() {
@@ -716,9 +747,9 @@ void ChatManagerImplementation::handleChatRoomMessage(CreatureObject* sender, co
 		return;
 
 	Zone* zone = sender->getZone();
-	if( zone == nullptr ){
+
+	if (zone == nullptr)
 		return;
-	}
 
 	//Check for moderated (muted) room.
 	if (channel->isModerated() && !channel->hasModerator(sender)) {
@@ -734,18 +765,32 @@ void ChatManagerImplementation::handleChatRoomMessage(CreatureObject* sender, co
 
 	BaseMessage* msg = new ChatRoomMessage(fullName, server->getGalaxyName(), formattedMessage, roomID);
 
-	// Auction Chat and Planet Chat should adhere to player ignore list
-	if(auctionRoom != nullptr && auctionRoom->getRoomID() == roomID) {
-		channel->broadcastMessageCheckIgnore(msg, name);
-	} else if (planetRoom != nullptr && planetRoom->getRoomID() == roomID) {
-		channel->broadcastMessageCheckIgnore(msg, name);
-	} else {
-		channel->broadcastMessage(msg);
+	if (ConfigManager::instance()->getChatLoggingEnabled() && sender->isPlayerCreature()) {
+		ManagedReference<AwakeningLogManager*> logMan = sender->getZoneServer()->getAwakeningLogManager();
+		String logEntry = fullName + ": " + formattedMessage.toString();
+
+		if (logMan != nullptr && auctionRoom != nullptr && auctionRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::AUCTIONCHAT, logEntry);
+		} else if (logMan != nullptr && generalRoom != nullptr && generalRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::GENERALCHAT, logEntry);
+		} else if (logMan != nullptr && planetRoom != nullptr && planetRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::PLANETCHAT, logEntry);
+		} else if (logMan != nullptr && pvpRoom != nullptr && pvpRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::PVPCHAT, logEntry);
+		} else if (logMan != nullptr && imperialRoom != nullptr && imperialRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::IMPERIALCHAT, logEntry);
+		} else if (logMan != nullptr && rebelRoom != nullptr && rebelRoom->getRoomID() == roomID) {
+			logMan->logAction(LogType::REBELCHAT, logEntry);
+		} else if (logMan != nullptr && channel->getChatRoomType() == ChatRoom::CUSTOM && channel->isPublic()) {
+			logEntry = channel->getName() + " - " + fullName + ": " + formattedMessage.toString();
+			logMan->logAction(LogType::CUSTOMCHAT, logEntry);
+		}
 	}
+
+	channel->broadcastMessageCheckIgnore(msg, name);
 
 	BaseMessage* amsg = new ChatOnSendRoomMessage(counter);
 	channel->broadcastMessage(amsg);
-
 }
 
 void ChatManagerImplementation::handleChatEnterRoomById(CreatureObject* player, uint32 roomID, int requestID, bool bypassSecurity) {
@@ -952,13 +997,9 @@ void ChatManagerImplementation::broadcastGalaxy(const String& message, const Str
 }
 
 void ChatManagerImplementation::broadcastGalaxy(CreatureObject* player, const String& message) {
-	String firstName = "SKYNET";
-
-	if (player != nullptr)
-		firstName = player->getFirstName();
-
 	StringBuffer fullMessage;
-	fullMessage << "[" << firstName << "] " << message;
+
+	fullMessage << "[System Announcement]: " << message;
 
 	const auto stringMessage = fullMessage.toString();
 
@@ -971,6 +1012,19 @@ void ChatManagerImplementation::broadcastGalaxy(CreatureObject* player, const St
 		ManagedReference<CreatureObject*> playerObject = playerMap->getNextValue(false);
 
 		playerObject->sendSystemMessage(stringMessage);
+	}
+
+	bool generalChatEnabled = ConfigManager::instance()->getGeneralChatEnabled();
+
+	if (generalChatEnabled) {
+		uint32 roomID = generalRoom->getRoomID();
+		ChatRoom* generalChat = getChatRoom(roomID);
+		UnicodeString formattedMessage(formatMessage(message));
+
+		if (generalChat != nullptr) {
+			BaseMessage* msg = new ChatRoomMessage("[SYSTEM ANNOUNCEMENT]", server->getGalaxyName(), message, roomID);
+			generalChat->broadcastMessage(msg);
+		}
 	}
 }
 
@@ -1047,6 +1101,12 @@ void ChatManagerImplementation::broadcastChatMessage(CreatureObject* sourceCreat
 					}
 				}, "NotifySpatialChatObserversLambda");
 			}
+		}
+		ManagedReference<AwakeningLogManager*> logMan = sourceCreature->getZoneServer()->getAwakeningLogManager();
+
+		if (logMan != nullptr && ConfigManager::instance()->getChatLoggingEnabled() && message.length() > 1) {
+			String logEntry = sourceCreature->getFirstName() + ": " + message.toString();
+			logMan->logAction(LogType::SPATIALCHAT, logEntry);
 		}
 	}
 
@@ -1499,6 +1559,7 @@ void ChatManagerImplementation::handleGroupChat(CreatureObject* sender, const Un
 
 void ChatManagerImplementation::handleGuildChat(CreatureObject* sender, const UnicodeString& message) {
 	String name = sender->getFirstName();
+	String fullName = "";
 
 	if (sender->isPlayerCreature()) {
 		ManagedReference<PlayerObject*> senderGhost = sender->getPlayerObject();
@@ -1517,7 +1578,7 @@ void ChatManagerImplementation::handleGuildChat(CreatureObject* sender, const Un
 			return;
 		}
 
-		name = getTaggedName(senderGhost, name);
+		fullName = getTaggedName(senderGhost, name);
 	}
 
 	ManagedReference<GuildObject*> guild = sender->getGuildObject().get();
@@ -1536,8 +1597,8 @@ void ChatManagerImplementation::handleGuildChat(CreatureObject* sender, const Un
 
 	ManagedReference<ChatRoom*> room = guild->getChatRoom();
 	if (room != nullptr) {
-		BaseMessage* msg = new ChatRoomMessage(name, server->getGalaxyName(), formattedMessage, room->getRoomID());
-		room->broadcastMessage(msg);
+		BaseMessage* msg = new ChatRoomMessage(fullName, server->getGalaxyName(), formattedMessage, room->getRoomID());
+		room->broadcastMessageCheckIgnore(msg, name);
 	}
 
 }
@@ -1644,6 +1705,7 @@ void ChatManagerImplementation::sendMail(const String& sendername, const Unicode
 		mail->setBody(body);
 		mail->setReceiverObjectID(receiverObjectID);
 		mail->setTimeStamp(currentTime);
+
 		ObjectManager::instance()->persistObject(mail, 1, "mail");
 
 		ManagedReference<CreatureObject*> creo = getPlayer(name);

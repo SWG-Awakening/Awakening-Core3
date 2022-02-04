@@ -194,6 +194,15 @@ public:
 	void doAreaMedicActionTarget(CreatureObject* creature, CreatureObject* creatureTarget, DotPack* dotPack) const {
 		int dotPower = dotPack->calculatePower(creature);
 
+		if (creature->isPlayerCreature() && creatureTarget->isPlayerCreature()) {
+			float basePvpModifier = 0.25f;
+			float masterCmMultiplier = 2.0f;
+			if (creature->hasSkill("science_combatmedic_master")){
+				dotPower = (int)(dotPower * basePvpModifier * masterCmMultiplier);
+			} else {
+				dotPower = (int)(dotPower * basePvpModifier);
+			}
+		}
 		//sendDotMessage(creature, creatureTarget, dotPower);
 
 		int dotDMG = 0;
@@ -388,6 +397,16 @@ public:
 		applyCost(creature, cost);
 
 		int dotPower = dotPack->calculatePower(creature);
+		if (creature->isPlayerCreature() && creatureTarget->isPlayerCreature()) {
+			float basePvpModifier = 0.25f;
+			float masterCmMultiplier = 2.0f;
+			if (creature->hasSkill("science_combatmedic_master")){
+				dotPower = (int)(dotPower * basePvpModifier * masterCmMultiplier);
+			} else {
+				dotPower = (int)(dotPower * basePvpModifier);
+			}
+		}
+
 		int dotDMG = 0;
 
 		if (dotPack->isPoisonDeliveryUnit()) {
@@ -458,7 +477,7 @@ public:
 			PlayerObject* ghost = creature->getPlayerObject().get();
 
 			if (ghost != nullptr) {
-				ghost->updateLastCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
+				ghost->updateLastPvpCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
 			}
 		}
 

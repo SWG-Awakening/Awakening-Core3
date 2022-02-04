@@ -130,6 +130,7 @@
 #include "conf/ConfigManager.h"
 #include "tre3/TreeArchive.h"
 
+#include "templates/tangible/ETerminalTemplate.h"
 
 Lua* TemplateManager::luaTemplatesInstance = nullptr;
 
@@ -384,7 +385,10 @@ void TemplateManager::loadLuaTemplates() {
 	info(true) << "Loading object templates";
 
 	try {
-		bool val = luaTemplatesInstance->runFile("scripts/object/main.lua");
+		bool val = luaTemplatesInstance->runFile("custom_scripts/object/main.lua");
+
+		if (!val)
+			val = luaTemplatesInstance->runFile("scripts/object/main.lua");
 
 		if (!val)
 			ERROR_CODE = LOAD_LUA_TEMPLATE_ERROR;
@@ -554,6 +558,8 @@ void TemplateManager::registerTemplateObjects() {
 	templateFactory.registerObject<DroidPersonalityModuleTemplate>(SharedObjectTemplate::DROIDMODULEPERSONALITY);
 	templateFactory.registerObject<VehicleObjectTemplate>(SharedObjectTemplate::VEHICLE);
 	templateFactory.registerObject<XpPurchaseTemplate>(SharedObjectTemplate::XPPURCHASE);
+
+	templateFactory.registerObject<ETerminalTemplate>(SharedObjectTemplate::ETERMINAL);
 }
 
 void TemplateManager::registerFunctions() {
@@ -761,6 +767,8 @@ void TemplateManager::registerGlobals() {
 	luaTemplatesInstance->setGlobalInt("STIM_C", StimPackTemplate::STIM_C);
 	luaTemplatesInstance->setGlobalInt("STIM_D", StimPackTemplate::STIM_D);
 	luaTemplatesInstance->setGlobalInt("STIM_E", StimPackTemplate::STIM_E);
+
+	luaTemplatesInstance->setGlobalInt("ETERMINAL", SharedObjectTemplate::ETERMINAL);
 
 	luaTemplatesInstance->setGlobalInt("CLONER_STANDARD", CloningBuildingObjectTemplate::STANDARD);
 	luaTemplatesInstance->setGlobalInt("CLONER_PLAYER_CITY", CloningBuildingObjectTemplate::PLAYER_CITY);
@@ -983,7 +991,10 @@ bool TemplateManager::existsTemplate(uint32 key) const {
 int TemplateManager::includeFile(lua_State* L) {
 	String filename = Lua::getStringParameter(L);
 
-	bool val = Lua::runFile("scripts/object/" + filename, L);
+	bool val = Lua::runFile("custom_scripts/object/" + filename, L);
+
+	if (!val)
+		val = Lua::runFile("scripts/object/" + filename, L);
 
 	if (!val)
 		ERROR_CODE = LOAD_LUA_TEMPLATE_ERROR;

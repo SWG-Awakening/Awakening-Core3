@@ -59,6 +59,16 @@ public:
 			}
 		}
 
+		// Make sure the droid is not in a private structure
+		ManagedReference<BuildingObject*> building = droid->getParentRecursively(SceneObjectType::BUILDING).castTo<BuildingObject*>();
+		if (building != nullptr && building->isPrivateStructure()) {
+			module->stopCountDown();
+			droid->showFlyText("pet/droid_modules","detonation_disabled", 204, 0, 0);
+			module->deactivate();
+			droid->removePendingTask("droid_detonation");
+			return;
+		}
+
 		if (droid->isDead() || droid->isIncapacitated()) {
 			module->stopCountDown();
 			droid->showFlyText("pet/droid_modules","detonation_disabled", 204, 0, 0);
@@ -211,7 +221,7 @@ public:
 					PlayerObject* ghost = player->getPlayerObject();
 
 					if (ghost != nullptr) {
-						ghost->updateLastCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
+						ghost->updateLastPvpCombatActionTimestamp(shouldGcwCrackdownTef, shouldGcwTef, shouldBhTef);
 					}
 				}
 

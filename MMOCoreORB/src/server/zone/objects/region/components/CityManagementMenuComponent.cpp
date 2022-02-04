@@ -12,6 +12,7 @@
 #include "server/zone/managers/city/CityManager.h"
 #include "server/zone/objects/player/PlayerObject.h"
 
+
 #ifndef CITY_DEBUG
 #define CITY_DEBUG
 #endif
@@ -73,6 +74,11 @@ void CityManagementMenuComponent::fillObjectMenuResponse(SceneObject* sceneObjec
 	menuResponse->addRadialMenuItemToRadialID(216, 218, 3, "@city/city:city_militia"); //Manage Militia
 
 	menuResponse->addRadialMenuItemToRadialID(216, 225, 3, "@city/city:city_specializations"); //City Specialization
+
+	if (ConfigManager::instance()->getTefEnabled() && ConfigManager::instance()->getCityTefEnabled()) {
+		menuResponse->addRadialMenuItemToRadialID(216, 231, 3, "Align City (Neutral, Imperial, Rebel)"); //Set Faction Alignment
+		menuResponse->addRadialMenuItemToRadialID(216, 232, 3, "Remove Factional Alignment"); //Remove Faction Alignment
+	}
 
 	if (!city->isMayor(player->getObjectID()))
 		return;
@@ -168,6 +174,13 @@ int CityManagementMenuComponent::handleObjectMenuSelect(SceneObject* sceneObject
 		break;
 #endif
 
+	 case 231:
+	 	cityManager->setFactionAlignment(city, player);
+	 	break;
+
+	 case 232:
+	 	cityManager->removeFactionAlignment(city, player);
+	 	break;
 	}
 
 	lock.release();

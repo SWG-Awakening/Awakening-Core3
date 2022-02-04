@@ -110,6 +110,17 @@
 #include "server/zone/objects/transaction/TransactionLog.h"
 #include "server/zone/objects/creature/commands/TransferItemMiscCommand.h"
 
+#include "server/zone/managers/visibility/VisibilityManager.h"
+#include "server/zone/objects/player/sui/callbacks/PlaceBountySuiCallback.h"
+#include "server/zone/managers/object/ObjectManager.h"
+
+#include "server/zone/objects/creature/buffs/PrivateSkillMultiplierBuff.h"
+
+#include "server/zone/managers/log/AwakeningLogManager.h"
+#include "server/zone/managers/log/LogType.h"
+#include "server/login/account/AccountManager.h"
+#include "templates/faction/Factions.h"
+
 PlayerManagerImplementation::PlayerManagerImplementation(ZoneServer* zoneServer, ZoneProcessServer* impl,
 					bool trackOnlineUsers) : Logger("PlayerManager") {
 
@@ -225,14 +236,18 @@ void PlayerManagerImplementation::loadLuaConfig() {
 	Lua* lua = new Lua();
 	lua->init();
 
-	lua->runFile("scripts/managers/player_manager.lua");
+	bool res = lua->runFile("custom_scripts/managers/player_manager.lua");
+
+	if (!res)
+		res = lua->runFile("scripts/managers/player_manager.lua");
 
 	allowSameAccountPvpRatingCredit = lua->getGlobalInt("allowSameAccountPvpRatingCredit");
 	onlineCharactersPerAccount = lua->getGlobalInt("onlineCharactersPerAccount");
-	performanceBuff = lua->getGlobalInt("performanceBuff");
-	medicalBuff = lua->getGlobalInt("medicalBuff");
-	performanceDuration = lua->getGlobalInt("performanceDuration");
-	medicalDuration = lua->getGlobalInt("medicalDuration");
+
+	adminperformanceBuff = lua->getGlobalInt("performanceBuff");
+	adminmedicalBuff = lua->getGlobalInt("medicalBuff");
+	adminperformanceDuration = lua->getGlobalInt("performanceDuration");
+	adminmedicalDuration = lua->getGlobalInt("medicalDuration");
 
 	groupExpMultiplier = lua->getGlobalFloat("groupExpMultiplier");
 
@@ -875,6 +890,15 @@ String PlayerManagerImplementation::setFirstName(CreatureObject* creature, const
 
 	ServerDatabase::instance()->executeStatement(charQuery);
 
+	StringBuffer statsQuery;
+	statsQuery
+			<< "UPDATE `character_stats` SET `firstname` = '"  << characterFirstName
+			<< "' WHERE `character_oid` = '" << creature->getObjectID()
+			<< "' AND `galaxy_id` = '" << galaxyID << "'";
+
+	if (ConfigManager::instance()->getCharacterStatsEnabled())
+		ServerDatabase::instance()->executeStatement(statsQuery);
+
 	// Success, return empty string
 	return "";
 }
@@ -1221,85 +1245,85 @@ void PlayerManagerImplementation::killPlayer(TangibleObject* attacker, CreatureO
 	player->updateTimeOfDeath();
 	player->clearBuffs(true, false);
 
-	PlayerObject* ghost = player->getPlayerObject();
+	if (player->getSkillMod("private_damage_divisor") > 0) {
+		ManagedReference<PrivateSkillMultiplierBuff*> multBuff = new PrivateSkillMultiplierBuff(player, STRING_HASHCODE("private_damage_divisor"), 340282346638528859811704183484516925440.0, BuffType::JEDI);
+		Locker locker(multBuff);
+		multBuff->setSkillModifier("private_damage_divisor", 0);
+		player->addBuff(multBuff);
+	}
 
-	if (ghost != nullptr) {
-		ghost->resetIncapacitationTimes();
-		if (ghost->hasTef()) {
-			ghost->schedulePvpTefRemovalTask(true, true, true);
-		}
+	PlayerObject* victimGhost = player->getPlayerObject();
+
+	if (victimGhost != nullptr) {
+		if (victimGhost->hasGcwTef() || victimGhost->hasBhTef())
+			victimGhost->schedulePvpTefRemovalTask(true, true, true);
+
+		victimGhost->resetIncapacitationTimes();
 	}
 
 	ThreatMap* threatMap = player->getThreatMap();
 
-	if (attacker->getFaction() != 0) {
-		if (attacker->isPlayerCreature() || attacker->isPet()) {
-			CreatureObject* attackerCreature = attacker->asCreatureObject();
+	if (attacker->isPlayerCreature() || attacker->isPet()) {
+		CreatureObject* attackerCreature = attacker->asCreatureObject();
 
-			if (attackerCreature->isPet()) {
-				CreatureObject* owner = attackerCreature->getLinkedCreature().get();
+		if (attackerCreature->isPet()) {
+			CreatureObject* owner = attackerCreature->getLinkedCreature().get();
 
-				if (owner != nullptr && owner->isPlayerCreature()) {
+			if (owner != nullptr && owner->isPlayerCreature())
 					attackerCreature = owner;
-				}
-			}
+		}
 
-			if (attackerCreature->isPlayerCreature()) {
-				if (!CombatManager::instance()->areInDuel(attackerCreature, player)) {
+		PlayerObject* attackerGhost = attackerCreature->getPlayerObject();
+
+		if (attackerGhost != nullptr && victimGhost != nullptr) {
+			if (!CombatManager::instance()->areInDuel(attackerCreature, player)) {
+				bool samePlayer = false;
+
+				if (attackerGhost->getIpAddress() == victimGhost->getIpAddress() || attackerGhost->getAccountID() == victimGhost->getAccountID())
+					samePlayer = true;
+
+				if (!samePlayer) {
+					//Award Faction Points
 					FactionManager::instance()->awardPvpFactionPoints(attackerCreature, player);
+
+					//Update Player Statistics
+					notifyPvpKill(attackerCreature, player);
 				}
-			}
 
-			PlayerObject* attackerGhost = attackerCreature->getPlayerObject();
-			PlayerObject* victimGhost = player->getPlayerObject();
-
-			if (attackerGhost != nullptr && victimGhost != nullptr) {
 				FrsData* attackerData = attackerGhost->getFrsData();
-				int attackerCouncil = attackerData->getCouncilType();
-
 				FrsData* victimData = victimGhost->getFrsData();
+
+				int attackerCouncil = attackerData->getCouncilType();
 				int victimCouncil = victimData->getCouncilType();
 
+				Reference<ThreatMap*> copyThreatMap = new ThreatMap(*threatMap);
+
 				if (attackerCouncil == FrsManager::COUNCIL_DARK && victimCouncil == FrsManager::COUNCIL_DARK) {
-					ManagedReference<FrsManager*> strongMan = player->getZoneServer()->getFrsManager();
-					ManagedReference<CreatureObject*> attackerStrongRef = attackerCreature->asCreatureObject();
-					ManagedReference<CreatureObject*> playerStrongRef = player->asCreatureObject();
+					ManagedReference<FrsManager*> frsManager = player->getZoneServer()->getFrsManager();
 
-					Reference<ThreatMap*> copyThreatMap = new ThreatMap(*threatMap);
-
-					Core::getTaskManager()->executeTask([attackerStrongRef, playerStrongRef, strongMan, copyThreatMap] () {
-						if (!strongMan->handleDarkCouncilDeath(attackerStrongRef, playerStrongRef))
-							strongMan->handleSuddenDeathLoss(playerStrongRef, copyThreatMap);
+					Core::getTaskManager()->executeTask([attackerCreature, player, frsManager, copyThreatMap] () {
+						if (!frsManager->handleDarkCouncilDeath(attackerCreature, player))
+							frsManager->handleSuddenDeathLoss(player, copyThreatMap);
 					}, "PvPFRSKillTask");
 				}
+
+				Core::getTaskManager()->executeTask([=] () {
+					Locker locker(player);
+					doPvpDeathRatingUpdate(player, copyThreatMap);
+				}, "PvpDeathRatingUpdateLambda");
 			}
 		}
+		stringId.setStringId("base_player", "prose_target_dead");
+		stringId.setTT(player->getDisplayedName());
+		player->sendSystemMessage(stringId);
 	}
 
 	CombatManager::instance()->freeDuelList(player, false);
-
-	if (attacker->isPlayerCreature()) {
-		ManagedReference<CreatureObject*> playerRef = player->asCreatureObject();
-
-		stringId.setStringId("base_player", "prose_target_dead");
-		stringId.setTT(player->getDisplayedName());
-		playerRef->sendSystemMessage(stringId);
-
-		Reference<ThreatMap*> copyThreatMap = new ThreatMap(*threatMap);
-
-		Core::getTaskManager()->executeTask([=] () {
-			if (playerRef != nullptr) {
-				Locker locker(playerRef);
-				doPvpDeathRatingUpdate(playerRef, copyThreatMap);
-			}
-		}, "PvpDeathRatingUpdateLambda");
-	}
 
 	threatMap->removeAll(true);
 
 	player->dropFromDefenderLists();
 	player->setTargetID(0, true);
-
 	player->notifyObjectKillObservers(attacker);
 }
 
@@ -1338,12 +1362,14 @@ void PlayerManagerImplementation::sendActivateCloneRequest(CreatureObject* playe
 	}
 
 	SortedVector<ManagedReference<SceneObject*> > locations = zone->getPlanetaryObjectList("cloningfacility");
-
 	ManagedReference<SceneObject*> closestCloning = zone->getNearestPlanetaryObject(player, "cloningfacility");
+	ManagedReference<CityRegion*> pCity = nullptr;
+
 	if (closestCloning == nullptr) {
 		warning("nearest cloning facility for player is nullptr");
 		return;
 	}
+
 	String closestName = "None";
 
 	//Check if player is city banned where the closest facility is or if it's not a valid cloner
@@ -1355,12 +1381,12 @@ void PlayerManagerImplementation::sendActivateCloneRequest(CreatureObject* playe
 			if (!isValidClosestCloner(player, location))
 				continue;
 
-			ManagedReference<CityRegion*> cr = location->getCityRegion().get();
+			pCity = location->getCityRegion().get();
 
 			String name = "";
 
-			if (cr != nullptr) {
-				name = cr->getRegionDisplayedName();
+			if (pCity != nullptr) {
+				name = pCity->getRegionDisplayedName();
 			} else {
 				name = location->getDisplayedName();
 			}
@@ -1373,24 +1399,68 @@ void PlayerManagerImplementation::sendActivateCloneRequest(CreatureObject* playe
 		}
 
 	} else {
-		ManagedReference<CityRegion*> cr = closestCloning->getCityRegion().get();
+		pCity = closestCloning->getCityRegion().get();
 
-		if (cr != nullptr)
-			closestName = cr->getRegionDisplayedName();
+		if (pCity != nullptr)
+			closestName = pCity->getRegionDisplayedName();
 		else
 			closestName = closestCloning->getDisplayedName();
 	}
 
+	ManagedReference<SceneObject*> secondClosestCloning = nullptr;
+	String secondClosestName = "None";
+
+	if (pCity != nullptr && pCity->getFactionAlignment() != 0 && player->getFaction() != 0 && pCity->getFactionAlignment() != player->getFaction()) {
+		int distance = 50000;
+		for (int j = 0; j < locations.size(); j++) {
+			ManagedReference<SceneObject*> location = locations.get(j);
+
+			if (!isValidClosestCloner(player, location))
+				continue;
+
+			pCity = location->getCityRegion().get();
+
+			String name = "";
+
+			if (pCity != nullptr) {
+				if (pCity->getFactionAlignment() != 0 && player->getFaction() != 0 && pCity->getFactionAlignment() != player->getFaction())
+					continue;
+
+				name = pCity->getRegionDisplayedName();
+			} else {
+				name = location->getDisplayedName();
+			}
+
+			if (location->getDistanceTo(player) < distance) {
+				distance = location->getDistanceTo(player);
+				secondClosestName = name;
+				secondClosestCloning = location;
+			}
+		}
+	}
+
 	StringBuffer promptText;
-	promptText << "Closest:\t\t " << closestName << "\n"
-			<< "Pre-Designated: " << predesignatedName << "\n"
-			<< "Cash Balance:\t " << player->getCashCredits() << "\n\n"
-			<< "Select the desired option and click OK.";
+
+	if (secondClosestCloning != nullptr) {
+		promptText << "\\#FFFFFFClosest:\t\t " << closestName << " \\#FFFF00[Enemy Stronghold]\n"
+				<< "\\#FFFFFFSecond Closest:\t\t " << secondClosestName << " \\#FFFF00[Neutral]\n"
+				<< "\\#FFFFFFPre-Designated: " << predesignatedName << "\n"
+				<< "Cash Balance:\t " << player->getCashCredits() << "\n\n"
+				<< "Select the desired option and click OK.";
+	} else {
+		promptText << "Closest:\t\t " << closestName << "\n"
+				<< "Pre-Designated: " << predesignatedName << "\n"
+				<< "Cash Balance:\t " << player->getCashCredits() << "\n\n"
+				<< "Select the desired option and click OK.";
+	}
 
 	cloneMenu->setPromptText(promptText.toString());
 
 	if (closestCloning != nullptr)
 		cloneMenu->addMenuItem("@base_player:revive_closest", closestCloning->getObjectID());
+
+	if (secondClosestCloning != nullptr)
+		cloneMenu->addMenuItem("Revive Second Closest", secondClosestCloning->getObjectID());
 
 	if (preDesignatedFacility != nullptr && preDesignatedFacility->getZone() == zone)
 		cloneMenu->addMenuItem("@base_player:revive_bind", preDesignatedFacility->getObjectID());
@@ -1523,8 +1593,17 @@ void PlayerManagerImplementation::sendPlayerToCloner(CreatureObject* player, uin
 		player->addShockWounds(100, true);
 	}
 
-	if (player->getFactionStatus() != FactionStatus::ONLEAVE && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_IMPERIAL && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_REBEL && !player->hasSkill("force_title_jedi_rank_03"))
-		player->setFactionStatus(FactionStatus::ONLEAVE);
+	if (ConfigManager::instance()->getTefEnabled()) {
+		if (player->getFactionStatus() != FactionStatus::COVERT && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_IMPERIAL && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_REBEL && !player->hasSkill("force_title_jedi_rank_03"))
+			player->setFactionStatus(FactionStatus::COVERT);
+	} else {
+		if (player->getFactionStatus() != FactionStatus::ONLEAVE && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_IMPERIAL && cbot->getFacilityType() != CloningBuildingObjectTemplate::FACTION_REBEL && !player->hasSkill("force_title_jedi_rank_03"))
+			player->setFactionStatus(FactionStatus::ONLEAVE);
+	}
+
+	//Update Spawn Protection Time Stamp
+	if (ConfigManager::instance()->getSpawnProtectionEnabled())
+		ghost->updateSpawnProtectionTimestamp();
 
 	SortedVector<ManagedReference<SceneObject*> > insurableItems = getInsurableItems(player, false);
 
@@ -1570,13 +1649,13 @@ void PlayerManagerImplementation::sendPlayerToCloner(CreatureObject* player, uin
 
 	}
 
-
+	//UnequipBrokenWearables
+	ghost->unequipBrokenWearables();
 
 	Reference<Task*> task = new PlayerIncapacitationRecoverTask(player, true);
 	task->schedule(3 * 1000);
 
 	player->notifyObservers(ObserverEventType::PLAYERCLONED, player, 0);
-
 
 	// Jedi experience loss.
 	if (ghost->getJediState() >= 2) {
@@ -1584,12 +1663,13 @@ void PlayerManagerImplementation::sendPlayerToCloner(CreatureObject* player, uin
 		int xpLoss = (int)(jediXpCap * -0.05);
 		int curExp = ghost->getExperience("jedi_general");
 
-		int negXpCap = -10000000; // Cap on negative jedi experience
+		int negXpCap = 0;
+		//int negXpCap = -10000000; //Default SWGEmu Value
 
 		if ((curExp + xpLoss) < negXpCap)
 			xpLoss = negXpCap - curExp;
 
-		awardExperience(player, "jedi_general", xpLoss, true);
+		awardExperience(player, "jedi_general", xpLoss, false, 1.0f, false);
 		StringIdChatParameter message("base_player","prose_revoke_xp");
 		message.setDI(xpLoss * -1);
 		message.setTO("exp_n", "jedi_general");
@@ -1624,8 +1704,6 @@ void PlayerManagerImplementation::ejectPlayerFromBuilding(CreatureObject* player
 	}
 }
 
-
-
 void PlayerManagerImplementation::disseminateExperience(TangibleObject* destructedObject, ThreatMap* threatMap,
 		SynchronizedVector<ManagedReference<CreatureObject*> >* spawnedCreatures,Zone* lairZone) {
 	uint32 totalDamage = threatMap->getTotalDamage();
@@ -1643,6 +1721,7 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
 	float gcwBonus = 1.0f;
 	uint32 winningFaction = -1;
 	int baseXp = 0;
+	int frsXp = 0;
 	Zone* zone = lairZone;
 	if (zone==nullptr) {
 		zone = destructedObject->getZone();
@@ -1672,14 +1751,18 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
 			}
 		}
 
-		if (ai != nullptr)
+		if (ai != nullptr) {
 			baseXp = ai->getBaseXp();
+			frsXp = ai->getFrsXp();
+		}
 
 	} else {
 		ManagedReference<AiAgent*> ai = cast<AiAgent*>(destructedObject);
 
-		if (ai != nullptr)
+		if (ai != nullptr) {
 			baseXp = ai->getBaseXp();
+			frsXp = ai->getFrsXp();
+		}
 	}
 
 	for (int i = 0; i < threatMap->size(); ++i) {
@@ -1798,6 +1881,12 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
 
 				//Award individual expType
 				awardExperience(attackerCreo, xpType, xpAmount);
+
+				//Award FRS Experience
+				PlayerObject* attackerGhost = attackerCreo->getPlayerObject();
+
+				if (attackerGhost != nullptr && attackerGhost->getFrsData()->getRank() >= 0)
+					awardExperience(attackerCreo, "force_rank_xp", frsXp, true, 1.0f, false);
 			}
 
 			awardExperience(attackerCreo, "combat_general", combatXp, true, 0.1f);
@@ -1829,9 +1918,6 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
 			}
 		}
 	}
-
-
-
 
 	//Send out squad leader experience.
 	for (int i = 0; i < slExperience.size(); ++i) {
@@ -2089,7 +2175,7 @@ int PlayerManagerImplementation::awardExperience(CreatureObject* player, const S
 
 	float buffMultiplier = 1.f;
 
-	if (player->hasBuff(BuffCRC::FOOD_XP_INCREASE) && !player->containsActiveSession(SessionFacadeType::CRAFTING))
+	if (player->hasBuff(BuffCRC::FOOD_XP_INCREASE))
 		buffMultiplier += player->getSkillModFromBuffs("xp_increase") / 100.f;
 
 	int xp = 0;
@@ -2367,6 +2453,9 @@ bool PlayerManagerImplementation::checkTradeItems(CreatureObject* player, Creatu
 			if (!playerDatapad->hasObjectInContainer(scene->getObjectID()))
 				return false;
 
+			if (scene->isStructureControlDevice() || scene->isVendorControlDevice())
+				return false;
+
 			if (scene->isPetControlDevice()) {
 				PetControlDevice* petControlDevice = cast<PetControlDevice*>(scene.get());
 
@@ -2433,6 +2522,9 @@ bool PlayerManagerImplementation::checkTradeItems(CreatureObject* player, Creatu
 				return false;
 
 			if (!receiverDatapad->hasObjectInContainer(scene->getObjectID()))
+				return false;
+
+			if (scene->isStructureControlDevice() || scene->isVendorControlDevice())
 				return false;
 
 			if (scene->isPetControlDevice()) {
@@ -2549,6 +2641,15 @@ void PlayerManagerImplementation::handleVerifyTradeMessage(CreatureObject* playe
 	if (obj != nullptr && obj->isPlayerCreature()) {
 		CreatureObject* receiver = cast<CreatureObject*>(obj.get());
 
+		PlayerObject* ghost = player->getPlayerObject();
+		PlayerObject* receiverGhost = receiver->getPlayerObject();
+		if (ghost == nullptr || receiverGhost == nullptr)
+			return;
+
+		ManagedReference<AwakeningLogManager*> logMan = player->getZoneServer()->getAwakeningLogManager();
+		if (logMan == nullptr)
+			return;
+
 		Locker clocker(receiver, player);
 
 		ManagedReference<TradeSession*> receiverTradeContainer = receiver->getActiveSession(SessionFacadeType::TRADE).castTo<TradeSession*>();
@@ -2576,6 +2677,16 @@ void PlayerManagerImplementation::handleVerifyTradeMessage(CreatureObject* playe
 				TransactionLog trx(player, receiver, item, TrxCode::PLAYERTRADE);
 				trx.setTrxGroup(trxGroup);
 
+				StringBuffer logEntry;
+				logEntry << player->getFirstName() << " traded " << item->getObjectNameStringIdName() << " to " << receiver->getFirstName();
+				logMan->logAction(LogType::PLAYERTRADE, logEntry.toString());
+
+				if (ghost->hasGodMode()) {
+					StringBuffer logEntry;
+					logEntry << player->getFirstName() << " traded " << item->getObjectNameStringIdName() << " to " << receiver->getFirstName();
+					logMan->logAction(LogType::STAFFTRADE, logEntry.toString());
+				}
+
 				if (item->isTangibleObject()) {
 					if (objectController->transferObject(item, receiverInventory, -1, true))
 						item->sendDestroyTo(player);
@@ -2593,6 +2704,16 @@ void PlayerManagerImplementation::handleVerifyTradeMessage(CreatureObject* playe
 
 				TransactionLog trx(receiver, player, item, TrxCode::PLAYERTRADE);
 				trx.setTrxGroup(trxGroup);
+
+				StringBuffer logEntry;
+				logEntry << receiver->getFirstName() << " traded " << item->getObjectNameStringIdName() << " to " << player->getFirstName();
+				logMan->logAction(LogType::PLAYERTRADE, logEntry.toString());
+
+				if (receiverGhost->hasGodMode()) {
+					StringBuffer logEntry;
+					logEntry << receiver->getFirstName() << " traded " << item->getObjectNameStringIdName() << " to " << player->getFirstName();
+					logMan->logAction(LogType::STAFFTRADE, logEntry.toString());
+				}
 
 				if (item->isTangibleObject()) {
 					if (objectController->transferObject(item, playerInventory, -1, true)) {
@@ -2614,6 +2735,23 @@ void PlayerManagerImplementation::handleVerifyTradeMessage(CreatureObject* playe
 			if (giveMoney > 0) {
 				TransactionLog trx(player, receiver, TrxCode::PLAYERTRADE, giveMoney, true);
 				trx.setTrxGroup(trxGroup);
+
+				StringBuffer logEntry;
+				logEntry << player->getFirstName() << " traded " << giveMoney << " credits to " << receiver->getFirstName();
+				logMan->logAction(LogType::PLAYERCREDITTRADE, logEntry.toString());
+
+				if (giveMoney >= 5000000) {
+					StringBuffer logEntry;
+					logEntry << player->getFirstName() << " traded " << giveMoney << " credits to " << receiver->getFirstName();
+					logMan->logAction(LogType::PLAYERLARGECREDITTRADE, logEntry.toString());
+				}
+
+				if (ghost->hasGodMode()) {
+					StringBuffer logEntry;
+					logEntry << player->getFirstName() << " traded " << giveMoney << " credits to " << receiver->getFirstName();
+					logMan->logAction(LogType::STAFFCREDITTRADE, logEntry.toString());
+				}
+
 				player->subtractCashCredits(giveMoney);
 				receiver->addCashCredits(giveMoney);
 			}
@@ -2623,6 +2761,19 @@ void PlayerManagerImplementation::handleVerifyTradeMessage(CreatureObject* playe
 			if (giveMoney > 0) {
 				TransactionLog trx(receiver, player, TrxCode::PLAYERTRADE, giveMoney, true);
 				trx.setTrxGroup(trxGroup);
+
+				if (giveMoney >= 5000000) {
+					StringBuffer logEntry;
+					logEntry << receiver->getFirstName() << " traded " << giveMoney << " credits to " << player->getFirstName();
+					logMan->logAction(LogType::PLAYERLARGECREDITTRADE, logEntry.toString());
+				}
+
+				if (receiverGhost->hasGodMode()) {
+					StringBuffer logEntry;
+					logEntry << receiver->getFirstName() << " traded " << giveMoney << " credits to " << player->getFirstName();
+					logMan->logAction(LogType::STAFFCREDITTRADE, logEntry.toString());
+				}
+
 				receiver->subtractCashCredits(giveMoney);
 				player->addCashCredits(giveMoney);
 			}
@@ -3913,7 +4064,7 @@ String PlayerManagerImplementation::banAccount(PlayerObject* admin, Account* acc
 				ManagedReference<CreatureObject*> player = getPlayer(entry->getFirstName());
 
 				if (player != nullptr) {
-					clearOwnedStructuresPermissions(player);
+					//clearOwnedStructuresPermissions(player);
 
 					if (player->isOnline()) {
 						player->sendMessage(new LogoutMessage());
@@ -5513,7 +5664,6 @@ void PlayerManagerImplementation::rescheduleCorpseDestruction(CreatureObject* pl
 	}
 }
 
-
 void PlayerManagerImplementation::getCleanupCharacterCount() {
 	info("**** GETTING CHARACTER CLEANUP INFORMATION ***",true);
 
@@ -5564,6 +5714,11 @@ void PlayerManagerImplementation::getCleanupCharacterCount() {
 void PlayerManagerImplementation::cleanupCharacters() {
 
 	info("**** PERFORMING CHARACTER CLEANUP ***",true);
+
+	ObjectManager* objectManager = ObjectManager::instance();
+
+	while (objectManager->isObjectUpdateInProgress())
+		Thread::sleep(500);
 
 	ObjectDatabase* thisDatabase = ObjectDatabaseManager::instance()->loadObjectDatabase("sceneobjects", true, 0xFFFF, false);
 
@@ -5780,22 +5935,72 @@ bool PlayerManagerImplementation::doEnhanceCharacter(uint32 crc, CreatureObject*
 	return true;
 }
 
-void PlayerManagerImplementation::enhanceCharacter(CreatureObject* player) {
+void PlayerManagerImplementation::adminEnhanceCharacter(CreatureObject* player) {
 	if (player == nullptr)
 		return;
 
 	bool message = true;
 
-	message = message && doEnhanceCharacter(0x98321369, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 0); // medical_enhance_health
-	message = message && doEnhanceCharacter(0x815D85C5, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 1); // medical_enhance_strength
-	message = message && doEnhanceCharacter(0x7F86D2C6, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 2); // medical_enhance_constitution
-	message = message && doEnhanceCharacter(0x4BF616E2, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 3); // medical_enhance_action
-	message = message && doEnhanceCharacter(0x71B5C842, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 4); // medical_enhance_quickness
-	message = message && doEnhanceCharacter(0xED0040D9, player, medicalBuff, medicalDuration, BuffType::MEDICAL, 5); // medical_enhance_stamina
+	message = message && doEnhanceCharacter(0x98321369, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 0); // medical_enhance_health
+	message = message && doEnhanceCharacter(0x815D85C5, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 1); // medical_enhance_strength
+	message = message && doEnhanceCharacter(0x7F86D2C6, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 2); // medical_enhance_constitution
+	message = message && doEnhanceCharacter(0x4BF616E2, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 3); // medical_enhance_action
+	message = message && doEnhanceCharacter(0x71B5C842, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 4); // medical_enhance_quickness
+	message = message && doEnhanceCharacter(0xED0040D9, player, adminmedicalBuff, adminmedicalDuration, BuffType::MEDICAL, 5); // medical_enhance_stamina
 
-	message = message && doEnhanceCharacter(0x11C1772E, player, performanceBuff, performanceDuration, BuffType::PERFORMANCE, 6); // performance_enhance_dance_mind
-	message = message && doEnhanceCharacter(0x2E77F586, player, performanceBuff, performanceDuration, BuffType::PERFORMANCE, 7); // performance_enhance_music_focus
-	message = message && doEnhanceCharacter(0x3EC6FCB6, player, performanceBuff, performanceDuration, BuffType::PERFORMANCE, 8); // performance_enhance_music_willpower
+	message = message && doEnhanceCharacter(0x11C1772E, player, adminperformanceBuff, adminperformanceDuration, BuffType::PERFORMANCE, 6); // performance_enhance_dance_mind
+	message = message && doEnhanceCharacter(0x2E77F586, player, adminperformanceBuff, adminperformanceDuration, BuffType::PERFORMANCE, 7); // performance_enhance_music_focus
+	message = message && doEnhanceCharacter(0x3EC6FCB6, player, adminperformanceBuff, adminperformanceDuration, BuffType::PERFORMANCE, 8); // performance_enhance_music_willpower
+
+	if (message && player->isPlayerCreature())
+		player->sendSystemMessage("An unknown force strengthens you for battles yet to come.");
+}
+
+void PlayerManagerImplementation::terminalEnhanceCharacter(CreatureObject* player) {
+	if (player == nullptr)
+		return;
+
+	bool message = true;
+	terminalPerformanceBuff = ConfigManager::instance()->getTerminalPerformanceBuff();
+	terminalMedicalBuff = ConfigManager::instance()->getTerminalMedicalBuff();
+	terminalPerformanceDuration = ConfigManager::instance()->getTerminalPerformanceDuration();
+	terminalMedicalDuration = ConfigManager::instance()->getTerminalMedicalDuration();
+
+	message = message && doEnhanceCharacter(0x98321369, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 0); // medical_enhance_health
+	message = message && doEnhanceCharacter(0x815D85C5, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 1); // medical_enhance_strength
+	message = message && doEnhanceCharacter(0x7F86D2C6, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 2); // medical_enhance_constitution
+	message = message && doEnhanceCharacter(0x4BF616E2, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 3); // medical_enhance_action
+	message = message && doEnhanceCharacter(0x71B5C842, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 4); // medical_enhance_quickness
+	message = message && doEnhanceCharacter(0xED0040D9, player, terminalMedicalBuff, terminalMedicalDuration, BuffType::MEDICAL, 5); // medical_enhance_stamina
+
+	message = message && doEnhanceCharacter(0x11C1772E, player, terminalPerformanceBuff, terminalPerformanceDuration, BuffType::PERFORMANCE, 6); // performance_enhance_dance_mind
+	message = message && doEnhanceCharacter(0x2E77F586, player, terminalPerformanceBuff, terminalPerformanceDuration, BuffType::PERFORMANCE, 7); // performance_enhance_music_focus
+	message = message && doEnhanceCharacter(0x3EC6FCB6, player, terminalPerformanceBuff, terminalPerformanceDuration, BuffType::PERFORMANCE, 8); // performance_enhance_music_willpower
+
+	if (message && player->isPlayerCreature())
+		player->sendSystemMessage("An unknown force strengthens you for battles yet to come.");
+}
+
+void PlayerManagerImplementation::builderEnhanceCharacter(CreatureObject* player) {
+	if (player == nullptr)
+		return;
+
+	bool message = true;
+	builderPerformanceBuff = ConfigManager::instance()->getBuilderPerformanceBuff();
+	builderMedicalBuff = ConfigManager::instance()->getBuilderMedicalBuff();
+	builderPerformanceDuration = ConfigManager::instance()->getBuilderPerformanceDuration();
+	builderMedicalDuration = ConfigManager::instance()->getBuilderMedicalDuration();
+
+	message = message && doEnhanceCharacter(0x98321369, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 0); // medical_enhance_health
+	message = message && doEnhanceCharacter(0x815D85C5, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 1); // medical_enhance_strength
+	message = message && doEnhanceCharacter(0x7F86D2C6, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 2); // medical_enhance_constitution
+	message = message && doEnhanceCharacter(0x4BF616E2, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 3); // medical_enhance_action
+	message = message && doEnhanceCharacter(0x71B5C842, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 4); // medical_enhance_quickness
+	message = message && doEnhanceCharacter(0xED0040D9, player, builderMedicalBuff, builderMedicalDuration, BuffType::MEDICAL, 5); // medical_enhance_stamina
+
+	message = message && doEnhanceCharacter(0x11C1772E, player, builderPerformanceBuff, builderPerformanceDuration, BuffType::PERFORMANCE, 6); // performance_enhance_dance_mind
+	message = message && doEnhanceCharacter(0x2E77F586, player, builderPerformanceBuff, builderPerformanceDuration, BuffType::PERFORMANCE, 7); // performance_enhance_music_focus
+	message = message && doEnhanceCharacter(0x3EC6FCB6, player, builderPerformanceBuff, builderPerformanceDuration, BuffType::PERFORMANCE, 8); // performance_enhance_music_willpower
 
 	if (message && player->isPlayerCreature())
 		player->sendSystemMessage("An unknown force strengthens you for battles yet to come.");
@@ -6005,6 +6210,10 @@ void PlayerManagerImplementation::doPvpDeathRatingUpdate(CreatureObject* player,
 	if (ghost == nullptr)
 		return;
 
+	ManagedReference<AwakeningLogManager*> logMan = player->getZoneServer()->getAwakeningLogManager();
+	if (logMan == nullptr)
+		return;
+
 	uint32 totalDamage = threatMap->getTotalDamage();
 
 	if (totalDamage == 0)
@@ -6038,9 +6247,6 @@ void PlayerManagerImplementation::doPvpDeathRatingUpdate(CreatureObject* player,
 
 		Locker crossLock(attackerCreo, player);
 
-		if (!allowSameAccountPvpRatingCredit && ghost->getAccountID() == attackerGhost->getAccountID())
-			continue;
-
 		if (entry->getTotalDamage() <= 0)
 			continue;
 
@@ -6052,6 +6258,49 @@ void PlayerManagerImplementation::doPvpDeathRatingUpdate(CreatureObject* player,
 		if (highDamageAmount == 0 || entry->getTotalDamage() > highDamageAmount) {
 			highDamageAmount = entry->getTotalDamage();
 			highDamageAttacker = attackerCreo;
+		}
+
+		if (frsManager != nullptr && frsManager->isFrsEnabled() && frsManager->isValidFrsBattle(attackerCreo, player)) {
+			String banMessage = "";
+			int minutes = 0;
+
+			if (ConfigManager::instance()->getFightClubbingPreventionEnabled()) {
+				if (ghost->getAccountID() == attackerGhost->getAccountID()) {
+					if (attackerGhost->getFCBanCount() == 0) {
+						minutes = 2880;
+						banMessage = systemBanAccount(attackerGhost->getAccount(), minutes, "Fight Clubbing");
+					} else if (attackerGhost->getFCBanCount() == 1) {
+						minutes = 10080;
+						banMessage = systemBanAccount(attackerGhost->getAccount(), minutes, "Fight Clubbing");
+					} else if (attackerGhost->getFCBanCount() >= 2) {
+						minutes = 525600;
+						banMessage = systemBanAccount(attackerGhost->getAccount(), minutes, "Fight Clubbing");
+					}
+
+					StringBuffer logEntry;
+					logEntry << attackerCreo->getFirstName() << " has attempted to kill " << player->getFirstName() << " in the FRS, but they are on the same account. This account is now banned for " + String::valueOf(minutes) + " minutes.";
+					logMan->logAction(LogType::FRSFIGHTCLUB, logEntry.toString());
+					attackerGhost->setFCBanCount(attackerGhost->getFCBanCount() + 1);
+					continue;
+				} else if (ghost->getIpAddress() == attackerGhost->getIpAddress()) {
+					if (ghost->getFCBanCount() == 0) {
+						minutes = 2880;
+						banMessage = systemBanAccount(ghost->getAccount(), minutes, "Fight Clubbing");
+					} else if (ghost->getFCBanCount() == 1) {
+						minutes = 10080;
+						banMessage = systemBanAccount(ghost->getAccount(), minutes, "Fight Clubbing");
+					} else if (ghost->getFCBanCount() >= 2) {
+						minutes = 525600;
+						banMessage = systemBanAccount(ghost->getAccount(), minutes, "Fight Clubbing");
+					}
+
+					StringBuffer logEntry;
+					logEntry << attackerCreo->getFirstName() << " has attempted to kill " << player->getFirstName() << " in the FRS, but they are on the same IP address. This account is now banned for " + String::valueOf(minutes) + " minutes.";
+					logMan->logAction(LogType::FRSFIGHTCLUB, logEntry.toString());
+					ghost->setFCBanCount(ghost->getFCBanCount() + 1);
+					continue;
+				}
+			}
 		}
 
 		if (attackerGhost->hasOnVictimList(player->getObjectID())) {
@@ -6090,11 +6339,12 @@ void PlayerManagerImplementation::doPvpDeathRatingUpdate(CreatureObject* player,
 		float damageContribution = (float) entry->getTotalDamage() / totalDamage;
 
 		if (frsManager != nullptr && frsManager->isFrsEnabled() && frsManager->isValidFrsBattle(attackerCreo, player)) {
+			ManagedReference<CreatureObject*> attackerRef = attackerCreo;
+
 			int attackerFrsXp = frsManager->calculatePvpExperienceChange(attackerCreo, player, damageContribution, false);
 			int victimFrsXp = frsManager->calculatePvpExperienceChange(attackerCreo, player, damageContribution, true);
 			frsXpAdjustment += victimFrsXp;
 
-			ManagedReference<CreatureObject*> attackerRef = attackerCreo;
 			if (attackerFrsXp > 0) {
 				Core::getTaskManager()->executeTask([attackerRef, frsManager, attackerFrsXp] () {
 					Locker locker(attackerRef);
@@ -6102,6 +6352,10 @@ void PlayerManagerImplementation::doPvpDeathRatingUpdate(CreatureObject* player,
 					frsManager->adjustFrsExperience(attackerRef, attackerFrsXp);
 				}, "FrsExperienceAdjustLambda");
 			}
+
+			StringBuffer logEntry;
+			logEntry << attackerCreo->getFirstName() << " assisted in killing or killed " << player->getFirstName() << " in the force ranking system.";
+			logMan->logAction(LogType::FRSKILL, logEntry.toString());
 		}
 
 		attackerGhost->addToVictimList(player->getObjectID());
@@ -6544,4 +6798,202 @@ void PlayerManagerImplementation::iteratePlayerNames(const PlayerNameIterator& i
 		iter.getNextKeyAndValue(name, oid);
 		iterator(name, oid);
 	}
+}
+
+void PlayerManagerImplementation::notifyPvpKill(CreatureObject* victor, CreatureObject* victim) {
+	PlayerObject* victorGhost = victor->getPlayerObject();
+	PlayerObject* victimGhost = victim->getPlayerObject();
+
+	if (victorGhost == nullptr || victimGhost == nullptr)
+		return;
+
+	//Update Victor PvP Kills
+	victorGhost->updatePvpKills();
+
+	//Update Victim PvP Deaths
+	victimGhost->updatePvpDeaths();
+
+	//Update Bounty Kills
+	if (victor->hasBountyMissionFor(victim))
+		victimGhost->updateBountyKills();
+
+	//Offer Player Bounty
+	if (ConfigManager::instance()->getPlayerBountyEnabled())
+		offerPlayerBounty(victor, victim);
+
+	//Send PvP Broadcast
+	if (ConfigManager::instance()->getPvpBroadcastEnabled()) {
+		ChatManager* chatManager = server->getChatManager();
+		chatManager->broadcastGalaxy(nullptr, victor->getDisplayedName() + " has defeated " + victim->getDisplayedName() + " in combat.");
+	}
+
+	//Award PvP Badges To Victor
+	int pvpKills = victorGhost->getPvpKills();
+	switch (pvpKills) {
+		case 50:
+			awardBadge(victorGhost, 144);
+			break;
+		case 75:
+			awardBadge(victorGhost, 145);
+			break;
+		case 100:
+			awardBadge(victorGhost, 146);
+			break;
+		case 250:
+			awardBadge(victorGhost, 147);
+			break;
+		case 500:
+			awardBadge(victorGhost, 148);
+			break;
+		case 750:
+			awardBadge(victorGhost, 149);
+			break;
+		case 1000:
+			awardBadge(victorGhost, 150);
+			break;
+		case 1500:
+			awardBadge(victorGhost, 151);
+			break;
+		case 2000:
+			awardBadge(victorGhost, 152);
+			break;
+		case 2500:
+			awardBadge(victorGhost, 153);
+			break;
+		case 3000:
+			awardBadge(victorGhost, 154);
+			break;
+		case 4000:
+			awardBadge(victorGhost, 155);
+			break;
+		case 5000:
+			awardBadge(victorGhost, 156);
+			break;
+		default:
+			break;
+	}
+
+	//PvP Database Logging
+	String victorFactionString = "Neutral";
+	String victimFactionString = "Neutral";
+	String victorFactionStatusString = "Covert";
+	String victimFactionStatusString = "Covert";
+
+	if (victor->getFaction() == Factions::FACTIONIMPERIAL) victorFactionString = "Imperial";
+	if (victor->getFaction() == Factions::FACTIONREBEL) victorFactionString = "Rebel";
+	if (victim->getFaction() == Factions::FACTIONIMPERIAL) victimFactionString = "Imperial";
+	if (victim->getFaction() == Factions::FACTIONREBEL) victimFactionString = "Rebel";
+	if (victor->getFactionStatus() == FactionStatus::OVERT) victorFactionStatusString = "Overt";
+	if (victim->getFactionStatus() == FactionStatus::OVERT) victimFactionStatusString = "Overt";
+
+	StringBuffer query;
+	query
+		<< "INSERT INTO `pvp_kills` (`victor_character_oid`, `victim_character_oid`, `victor_faction`, `victim_faction`, `victor_faction_status`, `victim_faction_status`) "
+		<< "VALUES ("
+		<< victor->getObjectID()
+		<< "," << victim->getObjectID()
+		<< ",'" << victorFactionString
+		<< "','" << victimFactionString
+		<< "','" << victorFactionStatusString
+		<< "','" << victimFactionStatusString
+		<< "')";
+	ServerDatabase::instance()->executeStatement(query);
+}
+
+void PlayerManagerImplementation::offerPlayerBounty(CreatureObject* attacker, CreatureObject* defender) {
+	PlayerObject* attackerGhost = attacker->getPlayerObject();
+	PlayerObject* defenderGhost = defender->getPlayerObject();
+
+	if (attackerGhost == nullptr || defenderGhost == nullptr)
+		return;
+
+	//Check if they already have the bounty offer window open.
+	if (defenderGhost->hasSuiBoxWindowType(SuiWindowType::PLAYER_BOUNTY_OFFER))
+		return;
+
+	if (attackerGhost->isPrivileged())
+		return;
+
+	//Player already has a bounty on their head or they are a jedi
+	if (attackerGhost->hasPlayerBounty() || attacker->hasSkill("force_title_jedi_rank_02"))
+		return;
+
+	//50% chance to offer a bounty.
+	bool offer = (System::random(100)) < 50;
+	if (!offer)
+		return;
+
+	int reward = attackerGhost->calculateBhReward();
+
+	ManagedReference<SuiMessageBox*> suibox = new SuiMessageBox(defender, SuiWindowType::PLAYER_BOUNTY_OFFER);
+
+	suibox->setPromptTitle("Bounty Hunters Guild");
+	suibox->setCallback(new PlaceBountySuiCallback(server, attacker, reward));
+	suibox->setOkButton(true, "@yes");
+	suibox->setCancelButton(true, "@no");
+
+	StringBuffer prompt;
+
+	prompt << "You have been killed in combat by " + attacker->getFirstName() + ".\n\n"
+           << "The Bounty Hunters Guild has taken notice and you can place a bounty on their head for " + String::valueOf(reward) + " credits.\n\n"
+           << "Do you want to place a bounty on " + attacker->getFirstName() + " for " + String::valueOf(reward) + " credits?";
+
+	suibox->setPromptText(prompt.toString());
+
+	defenderGhost->addSuiBox(suibox);
+	defender->sendMessage(suibox->generateMessage());
+}
+
+String PlayerManagerImplementation::systemBanAccount(Account* account, uint32 minutes, const String& reason) {
+	StringBuffer banReturnMsg;
+	String escapedReason = reason;
+	Database::escapeString(escapedReason);
+
+	if (account == nullptr) {
+		banReturnMsg << "Tried to ban account for " << reason << ", but the account was not found.";
+		return banReturnMsg.toString();
+	}
+
+	try {
+		StringBuffer query;
+		query << "INSERT INTO account_bans values (NULL, " << account->getAccountID() << ", " << 0 << ", now(), " << (uint64)time(0) + (60 * minutes) << ", '" << escapedReason << "');";
+		ServerDatabase::instance()->executeStatement(query);
+	} catch (Exception& e) {
+		banReturnMsg << "Tried to ban account " << account->getAccountID() << " for " << reason << ", but an exception occurred: " << e.getMessage();
+		return banReturnMsg.toString();
+	}
+
+	Locker locker(account);
+
+	account->setBanReason(reason);
+	account->setBanExpires(System::getMiliTime() + (60 * minutes) *1000);
+	account->setBanAdmin(0);
+
+	try {
+		CharacterList* characters = account->getCharacterList();
+		for (int i = 0; i < characters->size(); ++i) {
+			CharacterListEntry* entry = &characters->get(i);
+			if (entry->getGalaxyID() == server->getGalaxyID()) {
+
+				ManagedReference<CreatureObject*> player = getPlayer(entry->getFirstName());
+				if (player != nullptr) {
+					//clearOwnedStructuresPermissions(player);
+
+					if (player->isOnline()) {
+						player->sendMessage(new LogoutMessage());
+
+						Reference<ZoneClientSession*> session = player->getClient();
+
+						if (session != nullptr)
+							session->disconnect(true);
+					}
+				}
+			}
+		}
+	} catch (Exception& e) {
+		banReturnMsg << "Successfully Banned account " << account->getAccountID() << " for " << reason << ", but an exception occurred kicking their characters: " << e.getMessage();
+		return banReturnMsg.toString();
+	}
+	banReturnMsg << "Successfully Banned account " << account->getAccountID() << " for " << reason << ".";
+	return banReturnMsg.toString();
 }

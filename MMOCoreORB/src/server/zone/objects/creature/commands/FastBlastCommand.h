@@ -6,6 +6,7 @@
 #define FASTBLASTCOMMAND_H_
 
 #include "CombatQueueCommand.h"
+#include "server/zone/objects/tangible/weapon/WeaponObject.h"
 
 class FastBlastCommand : public CombatQueueCommand {
 public:
@@ -21,6 +22,10 @@ public:
 
 			if (!checkInvalidLocomotions(creature))
 				return INVALIDLOCOMOTION;
+
+			ManagedReference<WeaponObject*> weapon = creature->getWeapon();
+			if (weapon != nullptr && weapon->isHeavyWeapon())
+				return INVALIDWEAPON;
 
 			UnicodeString args = "healthDamageMultiplier=0.33f;actionDamageMultiplier=0.33f;mindDamageMultiplier=0.33f;";
 
